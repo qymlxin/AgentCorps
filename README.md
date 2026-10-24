@@ -31,6 +31,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - [远程访问与手机查看](docs/14-remote-access.md)
 - [Signal Room 控制台](docs/15-console.md)
 - [扩展生态清单](docs/16-extensions.md)
+- [聊天渠道适配](docs/17-channels.md)
 - [决策记录](docs/decisions/)
 - [系统架构图（SVG）](docs/diagrams/system-architecture.svg)
 
@@ -44,6 +45,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - `packages/security`：能力策略、沙箱配置和审计
 - `packages/session`：跨 CLI、网关、桌面端和渠道的会话与消息存储
 - `packages/extensions`：plugin、skill、rule、command、hook 清单与来源验证
+- `packages/channels`：飞书、钉钉、企微和自研 App 的消息规范化、签名和去重
 - `packages/memory`：全局记忆索引、检索、生命周期和隐私分区
 - `apps/cli`：终端控制面
 - `apps/console`：桌面/浏览器控制台与移动友好任务视图
