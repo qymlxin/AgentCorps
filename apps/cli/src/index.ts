@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { JsonlAgentAdapter } from '@agentcorps/adapters';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
+import { JsonlMemoryStore, MemoryService } from '@agentcorps/memory';
 import { JsonlSessionStore, SessionService } from '@agentcorps/session';
 import { MockAgent, SqliteEventStore, TaskRuntime } from '@agentcorps/runtime';
 
@@ -19,7 +20,13 @@ Commands:
   task show TASK_ID [--data-dir PATH]       Show a task and its events
   task run TASK_ID [--data-dir PATH]        Run a task with the configured mock agent
   task cancel TASK_ID [--data-dir PATH]    Cancel a task
-  task retry TASK_ID [--data-dir PATH]     Requeue a failed or cancelled task`);
+  task retry TASK_ID [--data-dir PATH]     Requeue a failed or cancelled task
+  memory save --scope S --content C       Save global/workspace/session memory
+       [--workspace-id ID] [--session-id ID] [--sensitivity public|private|secret]
+  memory search --query Q                 Search visible memory
+       [--workspace-id ID] [--session-id ID] [--include-sensitive]
+  memory list                              List exported memories
+  memory delete MEMORY_ID                 Soft-delete a memory`);
   process.exit(1);
 }
 
@@ -50,6 +57,10 @@ function runtime(): TaskRuntime {
   return new TaskRuntime({ store: new SqliteEventStore(join(dataDirectory(), 'agentcorps.db')) });
 }
 
+function memoryService(): MemoryService {
+  return new MemoryService(new JsonlMemoryStore(join(dataDirectory(), 'memory.jsonl')));
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'help';
   if (command === 'help') usage();
@@ -70,10 +81,49 @@ async function main(): Promise<void> {
     if (host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('Remote gateway binding requires --token');
     const dataDir = dataDirectory();
     const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? '*' : undefined);
-    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}) };
+    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}), memory: { service: memoryService() } };
     const server = await listenGateway(runtime(), port, host, new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))), gatewayOptions);
     console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);
     return;
+  }
+
+  if (command === 'memory') {
+    const service = memoryService();
+    const action = process.argv[3];
+    if (action === 'save') {
+      const scope = requiredFlag('--scope');
+      if (scope !== 'global' && scope !== 'workspace' && scope !== 'session') throw new Error('Memory scope must be global, workspace, or session');
+      const sensitivity = flag('--sensitivity') ?? 'private';
+      if (sensitivity !== 'public' && sensitivity !== 'private' && sensitivity !== 'secret') throw new Error('Memory sensitivity must be public, private, or secret');
+      const workspaceId = flag('--workspace-id');
+      const sessionId = flag('--session-id');
+      console.log(JSON.stringify(service.save({
+        scope,
+        content: requiredFlag('--content'),
+        source: 'user',
+        sensitivity,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      }), null, 2));
+      return;
+    }
+    if (action === 'search') {
+      const workspaceId = flag('--workspace-id');
+      const sessionId = flag('--session-id');
+      console.log(JSON.stringify(service.search(requiredFlag('--query'), { ...(workspaceId ? { workspaceId } : {}), ...(sessionId ? { sessionId } : {}), includeSensitive: process.argv.includes('--include-sensitive') }), null, 2));
+      return;
+    }
+    if (action === 'list') {
+      console.log(JSON.stringify(service.export(), null, 2));
+      return;
+    }
+    if (action === 'delete') {
+      const memoryId = process.argv[4] ?? flag('--memory-id');
+      if (!memoryId) usage();
+      console.log(JSON.stringify(service.delete(memoryId), null, 2));
+      return;
+    }
+    usage();
   }
 
   if (command !== 'task') usage();

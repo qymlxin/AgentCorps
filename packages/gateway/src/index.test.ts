@@ -49,6 +49,24 @@ describe('gateway', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
+  it('persists, searches, and deletes scoped memories through the gateway', async () => {
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { memory: { allowSensitiveSearch: true } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      const created = await fetch(`${base}/memory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'workspace', workspaceId: 'ws', content: 'release notes are concise', source: 'user' }) });
+      expect(created.status).toBe(201);
+      const memory = await created.json() as { memory: { id: string } };
+      const search = await fetch(`${base}/memory?query=concise&workspaceId=ws`);
+      expect((await search.json() as { memories: unknown[] }).memories).toHaveLength(1);
+      expect((await fetch(`${base}/memory/${memory.memory.id}`, { method: 'DELETE' })).status).toBe(200);
+      const afterDelete = await fetch(`${base}/memory?query=concise&workspaceId=ws`);
+      expect(await afterDelete.json()).toMatchObject({ memories: [] });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
   it('protects remote-capable routes with a bearer token', async () => {
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { bearerToken: 'secret' });
     const address = server.address();

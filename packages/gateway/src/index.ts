@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { TaskId } from '@agentcorps/domain';
+import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
 import { MockAgent, type TaskRuntime } from '@agentcorps/runtime';
 import {
@@ -54,6 +55,26 @@ function sessionIdFrom(pathname: string): string | undefined {
   return match?.[1];
 }
 
+function memoryIdFrom(pathname: string): string | undefined {
+  const match = /^\/memory\/([^/]+)$/.exec(pathname);
+  return match?.[1];
+}
+
+function memoryScope(value: unknown): MemoryScope {
+  if (value === 'global' || value === 'workspace' || value === 'session') return value;
+  throw new Error('Memory scope must be global, workspace, or session');
+}
+
+function memorySensitivity(value: unknown): MemorySensitivity {
+  if (value === undefined || value === 'public' || value === 'private' || value === 'secret') return value ?? 'private';
+  throw new Error('Memory sensitivity must be public, private, or secret');
+}
+
+function memorySource(value: unknown): MemoryRecord['source'] {
+  if (value === 'user' || value === 'agent' || value === 'system') return value;
+  throw new Error('Memory source must be user, agent, or system');
+}
+
 function messageRole(value: unknown): MessageRole {
   if (value === 'user' || value === 'agent' || value === 'system' || value === 'tool') return value;
   throw new Error('Message role must be user, agent, system, or tool');
@@ -67,10 +88,16 @@ export interface ChannelGatewayOptions {
   readonly sessionIds?: Map<string, string>;
 }
 
+export interface MemoryGatewayOptions {
+  readonly service?: MemoryService;
+  readonly allowSensitiveSearch?: boolean;
+}
+
 export interface GatewayOptions {
   readonly bearerToken?: string;
   readonly corsOrigin?: string;
   readonly channels?: ChannelGatewayOptions;
+  readonly memory?: MemoryGatewayOptions;
 }
 
 const channelKinds: readonly ChannelKind[] = ['feishu', 'dingtalk', 'wecom', 'custom'];
@@ -105,6 +132,7 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
   const adapters = { ...defaultChannelAdapters(), ...options.channels?.adapters };
   const deduplicator = new MessageDeduplicator();
   const sessionIds = options.channels?.sessionIds ?? new Map<string, string>();
+  const memories = options.memory?.service ?? new MemoryService(new InMemoryMemoryStore());
   return createServer(async (request, response) => {
     setCors(response, options);
     if (request.method === 'OPTIONS') {
@@ -173,6 +201,37 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           mode: session.mode,
         });
         return sendJson(response, 202, { accepted: true, channel: kind, externalMessageId: inbound.externalMessageId, session, message, task });
+      }
+      const memoryId = memoryIdFrom(pathname);
+      if (request.method === 'GET' && pathname === '/memory') {
+        const query = url.searchParams.get('query') ?? '';
+        if (!query.trim()) return sendJson(response, 400, { error: 'Memory query is required' });
+        const includeSensitive = url.searchParams.get('includeSensitive') === 'true';
+        if (includeSensitive && !options.memory?.allowSensitiveSearch) return sendJson(response, 403, { error: 'Sensitive memory search is disabled' });
+        const limitValue = Number(url.searchParams.get('limit') ?? '10');
+        const limit = Number.isInteger(limitValue) && limitValue > 0 && limitValue <= 100 ? limitValue : 10;
+        const found = memories.search(query, { ...(url.searchParams.get('workspaceId') ? { workspaceId: url.searchParams.get('workspaceId')! } : {}), ...(url.searchParams.get('sessionId') ? { sessionId: url.searchParams.get('sessionId')! } : {}), includeSensitive }, limit);
+        return sendJson(response, 200, { memories: found });
+      }
+      if (request.method === 'POST' && pathname === '/memory') {
+        const body = await readJson(request);
+        const record = memories.save({
+          scope: memoryScope(body.scope),
+          ...(body.workspaceId ? { workspaceId: String(body.workspaceId) } : {}),
+          ...(body.sessionId ? { sessionId: String(body.sessionId) } : {}),
+          content: String(body.content ?? ''),
+          source: memorySource(body.source ?? 'user'),
+          sensitivity: memorySensitivity(body.sensitivity),
+          ...(body.sourceEventId ? { sourceEventId: String(body.sourceEventId) } : {}),
+          ...(body.confidence !== undefined ? { confidence: Number(body.confidence) } : {}),
+          ...(body.expiresAt ? { expiresAt: String(body.expiresAt) } : {}),
+        });
+        return sendJson(response, 201, { memory: record });
+      }
+      if (request.method === 'DELETE' && memoryId) {
+        const deleted = memories.delete(memoryId);
+        if (!deleted) return sendJson(response, 404, { error: 'Memory not found' });
+        return sendJson(response, 200, { memory: deleted });
       }
       if (request.method === 'GET' && pathname === '/sessions') {
         sendJson(response, 200, { sessions: sessions.list() });

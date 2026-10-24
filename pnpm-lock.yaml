@@ -32,6 +32,9 @@ importers:
       '@agentcorps/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway
+      '@agentcorps/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -64,6 +67,9 @@ importers:
       '@agentcorps/domain':
         specifier: workspace:*
         version: link:../domain
+      '@agentcorps/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../runtime
