@@ -25,6 +25,18 @@ describe('TaskRuntime', () => {
     expect(runtime.getTask(task.id)?.status).toBe('succeeded');
   });
 
+  it('records protocol events emitted by an agent adapter', async () => {
+    const runtime = new TaskRuntime({ id: (prefix) => `${prefix}-1`, now: () => '2026-10-24T00:00:00.000Z' });
+    const task = runtime.createTask({ workspaceId: 'ws', sessionId: 'session', title: 'Protocol', objective: 'emit protocol', mode: 'code' });
+    await runtime.runTask(task.id, {
+      descriptor: { id: 'protocol-agent', displayName: 'Protocol Agent', version: '1', transport: 'a2a', capabilities: [] },
+      async execute(request) {
+        request.emitProtocol?.({ protocol: 'a2a', direction: 'request', method: 'message/send', metadata: { contextId: request.task.sessionId } });
+        request.emitProtocol?.({ protocol: 'a2a', direction: 'response', method: 'message/send', metadata: { status: 'completed' } });
+      },
+    });
+    expect(runtime.store.list(task.id).filter((event) => event.type === 'run.protocol')).toHaveLength(2);
+  });
   it('injects global, matching workspace, and matching session memory while excluding other scopes and secrets', async () => {
     let sequence = 0;
     const memory = new MemoryService(new InMemoryMemoryStore(), () => '2026-10-24T00:00:00.000Z', () => `memory-${++sequence}`);

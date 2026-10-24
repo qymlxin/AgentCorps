@@ -32,6 +32,7 @@ describe('McpStdioClient', () => {
     `;
     const client = new McpStdioClient({ command: process.execPath, args: ['-e', script] });
     const audit = new InMemoryAuditLog();
+    const events: string[] = [];
     const approvals = new ApprovalService(new InMemoryApprovalStore(), () => '2026-10-24T00:00:00.000Z', () => 'approval-1');
     const executor = new GuardedMcpToolExecutor({
       client,
@@ -39,6 +40,7 @@ describe('McpStdioClient', () => {
       approvals,
       context: { mode: 'code', profile: createDefaultProfile('/workspace', 'S2') },
       capabilityFor: () => 'process.exec',
+      onEvent: (event) => events.push(`${event.direction}:${event.method}`),
       id: () => 'request-1',
     });
     const tool = { name: 'run_command', inputSchema: { type: 'object' } };
@@ -50,6 +52,7 @@ describe('McpStdioClient', () => {
       await expect(executor.callTool('task-1', tool, { command: 'different command' }, pending.approvalId, pending.requestId)).rejects.toThrow('does not match');
       const completed = await executor.callTool('task-1', tool, { command: 'pnpm test' }, pending.approvalId, pending.requestId);
       expect(completed).toMatchObject({ status: 'completed', requestId: 'request-1', result: { content: [{ type: 'text', text: 'executed' }] } });
+      expect(events).toEqual(['request:tools/call', 'response:approval_required', 'request:tools/call', 'response:approval_rejected', 'request:tools/call', 'update:approval_consumed', 'response:tools/call']);
       expect(approvals.get(pending.approvalId!)?.status).toBe('consumed');
     } finally {
       client.close();

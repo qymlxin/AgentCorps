@@ -42,6 +42,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 
 - `packages/domain`：与平台无关的领域对象和事件类型
 - `packages/runtime`：本地编排运行时、事件存储、任务状态机和策略执行
+- `packages/workflows`：DAG 工作流校验、并发执行、重试、超时、取消、补偿和恢复
 - `packages/adapters`：Codex、Claude Code、Cursor、MCP、插件和聊天渠道适配器
 - `packages/security`：能力策略、沙箱配置和审计
 - `packages/session`：跨 CLI、网关、桌面端和渠道的会话与消息存储

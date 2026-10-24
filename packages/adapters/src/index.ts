@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { AgentDescriptor } from '@agentcorps/domain';
 import { A2AClient, AcpStdioClient, type A2AClientOptions, type AcpClientOptions } from '@agentcorps/protocols';
-import type { AgentAdapter, AgentRequest } from '@agentcorps/runtime';
+import type { AgentAdapter, AgentProtocolEvent, AgentRequest } from '@agentcorps/runtime';
 
 export interface JsonlAgentOptions {
   readonly id: string;
@@ -193,7 +193,10 @@ export class A2AAgentAdapter implements AgentAdapter {
 
   async execute(request: AgentRequest): Promise<void> {
     if (request.signal.aborted) throw abortError();
-    const result = await this.client.sendMessage(buildAgentPrompt(request), request.task.sessionId);
+    const prompt = buildAgentPrompt(request);
+    request.emitProtocol?.({ protocol: 'a2a', direction: 'request', method: 'message/send', metadata: { contextId: request.task.sessionId, textLength: prompt.length } });
+    const result = await this.client.sendMessage(prompt, request.task.sessionId);
+    request.emitProtocol?.({ protocol: 'a2a', direction: 'response', method: 'message/send', metadata: { taskId: result.id ?? '', status: typeof result.status?.state === 'string' ? result.status.state : 'received' } });
     if (request.signal.aborted) throw abortError();
     request.emit(JSON.stringify(result), 'assistant');
   }
@@ -213,6 +216,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   private readonly cwd: string;
   private readonly sessions = new Map<string, string>();
   private activeEmit: ((text: string, stream?: 'stdout' | 'stderr' | 'assistant') => void) | undefined;
+  private activeProtocolEmit: ((event: AgentProtocolEvent) => void) | undefined;
 
   constructor(options: AcpAgentAdapterOptions) {
     const configuredUpdate = options.clientOptions.onUpdate;
@@ -221,6 +225,7 @@ export class AcpAgentAdapter implements AgentAdapter {
       ...options.clientOptions,
       onUpdate: (params) => {
         configuredUpdate?.(params);
+        this.activeProtocolEmit?.({ protocol: 'acp', direction: 'update', method: 'session/update', metadata: { payloadSize: JSON.stringify(params).length } });
         this.activeEmit?.(JSON.stringify(params), 'assistant');
       },
     });
@@ -235,19 +240,28 @@ export class AcpAgentAdapter implements AgentAdapter {
 
   async execute(request: AgentRequest): Promise<void> {
     if (request.signal.aborted) throw abortError();
-    await this.client.initialize();
+    request.emitProtocol?.({ protocol: 'acp', direction: 'request', method: 'initialize' });
+    const initialize = await this.client.initialize();
+    request.emitProtocol?.({ protocol: 'acp', direction: 'response', method: 'initialize', metadata: { protocolVersion: initialize.protocolVersion } });
     let sessionId = this.sessions.get(request.task.sessionId);
     if (!sessionId) {
+      request.emitProtocol?.({ protocol: 'acp', direction: 'request', method: 'session/new', metadata: { cwd: this.clientCwd() } });
       const session = await this.client.newSession(this.clientCwd());
       sessionId = session.sessionId;
       this.sessions.set(request.task.sessionId, sessionId);
+      request.emitProtocol?.({ protocol: 'acp', direction: 'response', method: 'session/new', metadata: { sessionId } });
     }
     this.activeEmit = request.emit;
+    this.activeProtocolEmit = request.emitProtocol;
     try {
-      const result = await this.prompt(sessionId, buildAgentPrompt(request), request.signal);
+      const prompt = buildAgentPrompt(request);
+      request.emitProtocol?.({ protocol: 'acp', direction: 'request', method: 'session/prompt', metadata: { sessionId, textLength: prompt.length } });
+      const result = await this.prompt(sessionId, prompt, request.signal) as { stopReason?: string };
+      request.emitProtocol?.({ protocol: 'acp', direction: 'response', method: 'session/prompt', metadata: { sessionId, stopReason: result.stopReason ?? 'unknown' } });
       request.emit(JSON.stringify(result), 'assistant');
     } finally {
       this.activeEmit = undefined;
+      this.activeProtocolEmit = undefined;
     }
   }
 

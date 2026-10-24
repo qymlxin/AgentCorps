@@ -141,6 +141,12 @@ export class McpStdioClient {
   }
 }
 
+export interface McpToolEvent {
+  readonly direction: 'request' | 'response' | 'update';
+  readonly method: string;
+  readonly metadata?: Readonly<Record<string, string | number | boolean>>;
+}
+
 export interface GuardedMcpToolCall {
   readonly status: 'completed' | 'approval_required';
   readonly requestId: string;
@@ -154,6 +160,7 @@ export interface GuardedMcpToolExecutorOptions {
   readonly approvals: ApprovalService;
   readonly context: SecurityContext;
   readonly capabilityFor: (tool: McpTool) => SecurityCapability;
+  readonly onEvent?: (event: McpToolEvent) => void;
   readonly id?: () => string;
 }
 
@@ -171,20 +178,29 @@ export class GuardedMcpToolExecutor {
       capability: this.options.capabilityFor(tool),
       metadata: { tool: tool.name, arguments: JSON.stringify(arguments_) },
     };
+    this.options.onEvent?.({ direction: 'request', method: 'tools/call', metadata: { tool: tool.name, taskId, requestId: request.requestId } });
     const decision = this.options.policy.evaluate(request, this.options.context);
-    if (decision.decision === 'deny') throw new Error(`MCP tool denied: ${decision.reason}`);
+    if (decision.decision === 'deny') {
+      this.options.onEvent?.({ direction: 'response', method: 'tools/call', metadata: { tool: tool.name, decision: 'deny' } });
+      throw new Error(`MCP tool denied: ${decision.reason}`);
+    }
     if (decision.decision === 'approval_required') {
       if (!approvalId) {
         const approval = this.options.approvals.create(request, decision);
+        this.options.onEvent?.({ direction: 'response', method: 'approval_required', metadata: { tool: tool.name, approvalId: approval.id } });
         return { status: 'approval_required', approvalId: approval.id, requestId: request.requestId };
       }
       const approval = this.options.approvals.get(approvalId);
       if (!approval || approval.status !== 'approved' || !sameToolRequest(approval.request, request)) {
+        this.options.onEvent?.({ direction: 'response', method: 'approval_rejected', metadata: { tool: tool.name, approvalId } });
         throw new Error('MCP approval does not match this tool request');
       }
       if (!this.options.approvals.consume(approvalId)) throw new Error('MCP approval could not be consumed');
+      this.options.onEvent?.({ direction: 'update', method: 'approval_consumed', metadata: { tool: tool.name, approvalId } });
     }
-    return { status: 'completed', requestId: request.requestId, result: await this.options.client.callTool(tool.name, arguments_) };
+    const result = await this.options.client.callTool(tool.name, arguments_);
+    this.options.onEvent?.({ direction: 'response', method: 'tools/call', metadata: { tool: tool.name, resultItems: result.content.length } });
+    return { status: 'completed', requestId: request.requestId, result };
   }
 }
 

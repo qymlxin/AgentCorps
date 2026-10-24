@@ -8,6 +8,8 @@ import {
   type CreateTaskInput,
   type EventEnvelope,
   type EventId,
+  type ProtocolDirection,
+  type ProtocolName,
   type RunId,
   type Task,
   type TaskEvent,
@@ -142,12 +144,20 @@ export class SqliteEventStore implements EventStore {
   close(): void { this.db.close(); }
 }
 
+export interface AgentProtocolEvent {
+  readonly protocol: ProtocolName;
+  readonly direction: ProtocolDirection;
+  readonly method: string;
+  readonly metadata?: Readonly<Record<string, string | number | boolean>>;
+}
+
 export interface AgentRequest {
   readonly task: Task;
   readonly runId: RunId;
   readonly signal: AbortSignal;
   readonly memory?: readonly MemoryRecord[];
   readonly emit: (text: string, stream?: 'stdout' | 'stderr' | 'assistant') => void;
+  readonly emitProtocol?: (event: AgentProtocolEvent) => void;
 }
 
 export interface AgentAdapter {
@@ -287,6 +297,8 @@ export class TaskRuntime {
     try {
       await agent.execute({ task: this.tasks.get(taskId)!, runId, signal: controller.signal, ...(contextMemory.length ? { memory: contextMemory } : {}), emit: (text, stream = 'assistant') => {
         this.store.append(this.event('run.output', task.id, { runId, text, stream }));
+      }, emitProtocol: (protocolEvent) => {
+        this.store.append(this.event('run.protocol', task.id, { runId, ...protocolEvent }));
       }});
       if (this.tasks.get(taskId)?.status !== 'cancelled') this.changeStatus(this.tasks.get(taskId)!, 'succeeded');
     } catch (error) {

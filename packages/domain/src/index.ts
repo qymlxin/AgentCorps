@@ -69,6 +69,17 @@ export interface RunOutputPayload {
   readonly stream: 'stdout' | 'stderr' | 'assistant';
 }
 
+export type ProtocolName = 'stdio-jsonl' | 'a2a' | 'acp' | 'mcp';
+export type ProtocolDirection = 'request' | 'response' | 'update';
+
+export interface RunProtocolPayload {
+  readonly runId: RunId;
+  readonly protocol: ProtocolName;
+  readonly direction: ProtocolDirection;
+  readonly method: string;
+  readonly metadata?: Readonly<Record<string, string | number | boolean>>;
+}
+
 export interface TaskStatusChangedPayload {
   readonly from: TaskStatus;
   readonly to: TaskStatus;
@@ -79,6 +90,7 @@ export type TaskEvent =
   | EventEnvelope<'task.created', TaskCreatedPayload>
   | EventEnvelope<'run.started', RunStartedPayload>
   | EventEnvelope<'run.output', RunOutputPayload>
+  | EventEnvelope<'run.protocol', RunProtocolPayload>
   | EventEnvelope<'task.status_changed', TaskStatusChangedPayload>;
 
 export interface CreateTaskInput {

@@ -97,6 +97,7 @@ describe('local process adapters', () => {
 
   it('executes an A2A task through the common AgentAdapter contract', async () => {
     const output: string[] = [];
+    const protocolEvents: string[] = [];
     const adapter = new A2AAgentAdapter({
       id: 'a2a-fixture',
       displayName: 'A2A fixture',
@@ -110,13 +111,16 @@ describe('local process adapters', () => {
       runId: 'run-1' as never,
       signal: new AbortController().signal,
       emit: (text) => output.push(text),
+      emitProtocol: (event) => protocolEvents.push(`${event.direction}:${event.method}`),
     });
     expect(adapter.descriptor.transport).toBe('a2a');
     expect(output[0]).toContain('remote-task-1');
+    expect(protocolEvents).toEqual(['request:message/send', 'response:message/send']);
   });
 
   it('executes and reuses an ACP session through the common AgentAdapter contract', async () => {
     const output: string[] = [];
+    const protocolEvents: string[] = [];
     const script = "const rl=require('node:readline').createInterface({input:process.stdin}); let sessionCount=0; rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); if(m.method==='session/new'){sessionCount++; console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'acp-session-'+sessionCount}}));} if(m.method==='session/prompt') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn',sessionId:m.params.sessionId}}));});";
     const adapter = new AcpAgentAdapter({
       id: 'acp-fixture',
@@ -124,12 +128,16 @@ describe('local process adapters', () => {
       clientOptions: { command: process.execPath, args: ['-e', script], cwd: process.cwd() },
     });
     const task = { id: 'task-1' as never, workspaceId: 'ws', sessionId: 's', title: 'test', objective: 'ask local agent', mode: 'code' as const, status: 'running' as const, createdAt: '', updatedAt: '' };
-    const request = () => ({ task, runId: 'run-1' as never, signal: new AbortController().signal, emit: (text: string) => output.push(text) });
+    const request = () => ({ task, runId: 'run-1' as never, signal: new AbortController().signal, emit: (text: string) => output.push(text), emitProtocol: (event: { direction: string; method: string }) => protocolEvents.push(`${event.direction}:${event.method}`) });
     await adapter.execute(request());
     await adapter.execute(request());
     adapter.close();
     expect(adapter.descriptor.transport).toBe('acp');
     expect(output.filter((text) => text.includes('end_turn'))).toHaveLength(2);
+    expect(protocolEvents).toEqual([
+      'request:initialize', 'response:initialize', 'request:session/new', 'response:session/new', 'request:session/prompt', 'response:session/prompt',
+      'request:initialize', 'response:initialize', 'request:session/prompt', 'response:session/prompt',
+    ]);
   });  it('passes the stable session identifier to command processes', async () => {
     const output: string[] = [];
     const adapter = new CommandAgentAdapter({
