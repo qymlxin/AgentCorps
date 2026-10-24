@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
-  "references": [{ "path": "../../packages/domain" }, { "path": "../../packages/runtime" }, { "path": "../../packages/gateway" }, { "path": "../../packages/adapters" }],
+  "references": [{ "path": "../../packages/domain" }, { "path": "../../packages/runtime" }, { "path": "../../packages/gateway" }, { "path": "../../packages/adapters" }, { "path": "../../packages/session" }],
   "include": ["src/**/*.ts"]
 }

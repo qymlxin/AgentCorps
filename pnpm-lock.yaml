@@ -35,6 +35,9 @@ importers:
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@agentcorps/session':
+        specifier: workspace:*
+        version: link:../../packages/session
 
   packages/adapters:
     dependencies:
@@ -55,6 +58,9 @@ importers:
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../runtime
+      '@agentcorps/session':
+        specifier: workspace:*
+        version: link:../session
 
   packages/mcp: {}
 
@@ -67,6 +73,8 @@ importers:
         version: link:../domain
 
   packages/security: {}
+
+  packages/session: {}
 
 packages:
 

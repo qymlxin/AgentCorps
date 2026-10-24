@@ -6,6 +6,6 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": { ".": "./dist/index.js" },
-  "dependencies": { "@agentcorps/domain": "workspace:*", "@agentcorps/runtime": "workspace:*" },
+  "dependencies": { "@agentcorps/domain": "workspace:*", "@agentcorps/runtime": "workspace:*", "@agentcorps/session": "workspace:*" },
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" }
 }

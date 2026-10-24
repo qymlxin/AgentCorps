@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { TaskId } from '@agentcorps/domain';
+import { InMemorySessionStore, SessionService, type MessageRole } from '@agentcorps/session';
 import { MockAgent, type TaskRuntime } from '@agentcorps/runtime';
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -31,7 +32,17 @@ function taskIdFrom(pathname: string): TaskId | undefined {
   return match?.[1] as TaskId | undefined;
 }
 
-export function createGatewayServer(runtime: TaskRuntime): Server {
+function sessionIdFrom(pathname: string): string | undefined {
+  const match = /^\/sessions\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
+  return match?.[1];
+}
+
+function messageRole(value: unknown): MessageRole {
+  if (value === 'user' || value === 'agent' || value === 'system' || value === 'tool') return value;
+  throw new Error('Message role must be user, agent, system, or tool');
+}
+
+export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore())): Server {
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
@@ -40,6 +51,29 @@ export function createGatewayServer(runtime: TaskRuntime): Server {
         sendJson(response, 200, { status: 'ok', service: 'agentcorps-gateway', version: '0.1.0' });
         return;
       }
+      if (request.method === 'GET' && pathname === '/sessions') {
+        sendJson(response, 200, { sessions: sessions.list() });
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/sessions') {
+        const body = await readJson(request);
+        const session = sessions.create({ workspaceId: String(body.workspaceId ?? 'local-workspace'), title: String(body.title ?? ''), mode: body.mode === 'work' ? 'work' : 'code' });
+        sendJson(response, 201, { session });
+        return;
+      }
+      const sessionId = sessionIdFrom(pathname);
+      const sessionAction = pathname.split('/')[3];
+      if (sessionId && request.method === 'GET' && !sessionAction) {
+        const session = sessions.get(sessionId);
+        if (!session) return sendJson(response, 404, { error: 'Session not found' });
+        return sendJson(response, 200, { session, messages: sessions.messages(sessionId) });
+      }
+      if (sessionId && request.method === 'POST' && sessionAction === 'messages') {
+        const body = await readJson(request);
+        const message = sessions.appendMessage({ sessionId, role: messageRole(body.role), content: String(body.content ?? ''), ...(body.agentId ? { agentId: String(body.agentId) } : {}), ...(body.taskId ? { taskId: String(body.taskId) } : {}) });
+        return sendJson(response, 201, { message });
+      }
+      if (sessionId && request.method === 'POST' && sessionAction === 'archive') return sendJson(response, 200, { session: sessions.archive(sessionId) });
       if (request.method === 'GET' && pathname === '/tasks') {
         sendJson(response, 200, { tasks: runtime.listTasks() });
         return;
@@ -85,8 +119,8 @@ export function createGatewayServer(runtime: TaskRuntime): Server {
   });
 }
 
-export function listenGateway(runtime: TaskRuntime, port = 43210, host = '127.0.0.1'): Promise<Server> {
-  const server = createGatewayServer(runtime);
+export function listenGateway(runtime: TaskRuntime, port = 43210, host = '127.0.0.1', sessions = new SessionService(new InMemorySessionStore())): Promise<Server> {
+  const server = createGatewayServer(runtime, sessions);
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {

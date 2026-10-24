@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
-  "references": [{ "path": "../domain" }, { "path": "../runtime" }],
+  "references": [{ "path": "../domain" }, { "path": "../runtime" }, { "path": "../session" }],
   "include": ["src/**/*.ts"]
 }

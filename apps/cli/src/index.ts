@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { JsonlAgentAdapter } from '@agentcorps/adapters';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
+import { JsonlSessionStore, SessionService } from '@agentcorps/session';
 import { JsonlEventStore, MockAgent, TaskRuntime } from '@agentcorps/runtime';
 
 function usage(): never {
@@ -41,9 +42,12 @@ function taskId(value: string | undefined): TaskId {
   return value as TaskId;
 }
 
+function dataDirectory(): string {
+  return flag('--data-dir') ?? join(homedir(), '.agentcorps');
+}
+
 function runtime(): TaskRuntime {
-  const dataDir = flag('--data-dir') ?? join(homedir(), '.agentcorps');
-  return new TaskRuntime({ store: new JsonlEventStore(join(dataDir, 'events.jsonl')) });
+  return new TaskRuntime({ store: new JsonlEventStore(join(dataDirectory(), 'events.jsonl')) });
 }
 
 async function main(): Promise<void> {
@@ -61,7 +65,8 @@ async function main(): Promise<void> {
 
   if (command === 'serve') {
     const port = Number(flag('--port') ?? '43210');
-    const server = await listenGateway(runtime(), port);
+    const dataDir = dataDirectory();
+    const server = await listenGateway(runtime(), port, '127.0.0.1', new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))));
     console.log(`AgentCorps gateway listening on http://127.0.0.1:${(server.address() as { port: number }).port}`);
     return;
   }

@@ -10,6 +10,13 @@ describe('gateway', () => {
     const base = `http://127.0.0.1:${address.port}`;
     try {
       expect((await fetch(`${base}/health`)).status).toBe(200);
+      const sessionResponse = await fetch(`${base}/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'API session', workspaceId: 'ws' }) });
+      expect(sessionResponse.status).toBe(201);
+      const session = await sessionResponse.json() as { session: { id: string } };
+      const messageResponse = await fetch(`${base}/sessions/${session.session.id}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'user', content: 'hello from API' }) });
+      expect(messageResponse.status).toBe(201);
+      const sessionDetail = await fetch(`${base}/sessions/${session.session.id}`);
+      expect((await sessionDetail.json() as { messages: unknown[] }).messages).toHaveLength(1);
       const created = await fetch(`${base}/tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'API task', objective: 'test API' }) });
       expect(created.status).toBe(201);
       const body = await created.json() as { task: { id: string } };
