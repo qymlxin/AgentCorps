@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
-  <title id="title">AgentCorps ,0H Agent ¶„</title>
-  <desc id="desc">(7LbŒè SÇ,0§6b¿îĞLöĞLöÇMhŞ¥ AgentMCPÒöŒ™±vŠpnXe,0EB</desc>
+  <title id="title">AgentCorps æœ¬åœ°ä¼˜å…ˆå¤š Agent æ¶æ„</title>
+  <desc id="desc">ç”¨æˆ·ç•Œé¢å’Œå¤–éƒ¨æ¸ é“é€šè¿‡æœ¬åœ°æ§åˆ¶é¢è®¿é—®è¿è¡Œæ—¶ï¼Œè¿è¡Œæ—¶é€šè¿‡é€‚é…å™¨è¿æ¥ Agentã€MCPã€æ’ä»¶å’Œæ²™ç®±ï¼Œå¹¶æŠŠæ•°æ®å­˜å…¥æœ¬åœ°æŒä¹…å±‚ã€‚</desc>
   <defs>
     <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#08111f"/><stop offset="1" stop-color="#10243a"/></linearGradient>
     <linearGradient id="core" x1="0" x2="1"><stop stop-color="#2563eb"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient>
@@ -16,26 +16,26 @@
   <text x="72" y="108" class="sub">Local-first multi-agent control plane</text>
 
   <rect class="box" x="60" y="168" width="250" height="155" fill="#172d46" stroke="#47739e"/>
-  <text x="88" y="210" class="label">(7eã</text><text x="88" y="242" class="sub">CLI · Desktop · Mobile</text><text x="88" y="268" class="sub">Feishu · DingTalk · WeCom</text><text x="88" y="294" class="sub">Custom App API</text>
+  <text x="88" y="210" class="label">ç”¨æˆ·å…¥å£</text><text x="88" y="242" class="sub">CLI Â· Desktop Â· Mobile</text><text x="88" y="268" class="sub">Feishu Â· DingTalk Â· WeCom</text><text x="88" y="294" class="sub">Custom App API</text>
 
   <rect class="box" x="370" y="132" width="410" height="250" fill="url(#core)" stroke="#67e8f9"/>
-  <text x="408" y="180" class="label">Local Control Plane</text><text x="408" y="213" class="sub">REST · WebSocket · SSE · Auth</text>
-  <rect x="408" y="246" width="334" height="94" rx="12" fill="#071a36" opacity=".8"/><text x="432" y="280" class="small">Task Runtime · Event Log</text><text x="432" y="307" class="small">Scheduler · Policy · Approval</text><text x="432" y="334" class="small">Session · Memory · Audit</text>
+  <text x="408" y="180" class="label">Local Control Plane</text><text x="408" y="213" class="sub">REST Â· WebSocket Â· SSE Â· Auth</text>
+  <rect x="408" y="246" width="334" height="94" rx="12" fill="#071a36" opacity=".8"/><text x="432" y="280" class="small">Task Runtime Â· Event Log</text><text x="432" y="307" class="small">Scheduler Â· Policy Â· Approval</text><text x="432" y="334" class="small">Session Â· Memory Â· Audit</text>
 
   <rect class="box" x="850" y="110" width="260" height="130" fill="#29204d" stroke="#8b5cf6"/>
-  <text x="882" y="155" class="label">Agent Adapters</text><text x="882" y="185" class="sub">Codex · Claude Code</text><text x="882" y="211" class="sub">Cursor · JSONL/stdio</text>
+  <text x="882" y="155" class="label">Agent Adapters</text><text x="882" y="185" class="sub">Codex Â· Claude Code</text><text x="882" y="211" class="sub">Cursor Â· JSONL/stdio</text>
   <rect class="box" x="1160" y="110" width="220" height="130" fill="#29204d" stroke="#8b5cf6"/>
-  <text x="1190" y="155" class="label">MCP / A2A</text><text x="1190" y="185" class="sub">Tools · Resources</text><text x="1190" y="211" class="sub">Experimental gateway</text>
+  <text x="1190" y="155" class="label">MCP / A2A</text><text x="1190" y="185" class="sub">Tools Â· Resources</text><text x="1190" y="211" class="sub">Experimental gateway</text>
 
   <rect class="box" x="850" y="290" width="260" height="130" fill="#38213b" stroke="#ec4899"/>
-  <text x="883" y="335" class="label">Extensions</text><text x="883" y="365" class="sub">Plugin · Skill · Rule</text><text x="883" y="391" class="sub">Command · Hook</text>
+  <text x="883" y="335" class="label">Extensions</text><text x="883" y="365" class="sub">Plugin Â· Skill Â· Rule</text><text x="883" y="391" class="sub">Command Â· Hook</text>
   <rect class="box" x="1160" y="290" width="220" height="130" fill="#38213b" stroke="#ec4899"/>
-  <text x="1190" y="335" class="label">Sandbox</text><text x="1190" y="365" class="sub">S0S4 policy tiers</text><text x="1190" y="391" class="sub">OS / container / VM</text>
+  <text x="1190" y="335" class="label">Sandbox</text><text x="1190" y="365" class="sub">S0â€“S4 policy tiers</text><text x="1190" y="391" class="sub">OS / container / VM</text>
 
   <rect class="box" x="370" y="490" width="410" height="180" fill="#143b3a" stroke="#2dd4bf"/>
-  <text x="408" y="538" class="label">Local Persistence</text><text x="408" y="571" class="sub">SQLite metadata + FTS</text><text x="408" y="597" class="sub">Append-only events</text><text x="408" y="623" class="sub">Content-addressed artifacts</text><text x="408" y="649" class="sub">Keychain · Export · Backup</text>
+  <text x="408" y="538" class="label">Local Persistence</text><text x="408" y="571" class="sub">SQLite metadata + FTS</text><text x="408" y="597" class="sub">Append-only events</text><text x="408" y="623" class="sub">Content-addressed artifacts</text><text x="408" y="649" class="sub">Keychain Â· Export Â· Backup</text>
   <rect class="box" x="850" y="490" width="530" height="180" fill="#25352a" stroke="#84cc16"/>
-  <text x="884" y="538" class="label">Security &amp; Observability</text><text x="884" y="571" class="sub">Capabilities · Approvals · Audit</text><text x="884" y="597" class="sub">Rate limits · Redaction · Health</text><text x="884" y="623" class="sub">Replay · Recovery · Metrics</text><text x="884" y="649" class="sub">Data lifecycle · Privacy controls</text>
+  <text x="884" y="538" class="label">Security &amp; Observability</text><text x="884" y="571" class="sub">Capabilities Â· Approvals Â· Audit</text><text x="884" y="597" class="sub">Rate limits Â· Redaction Â· Health</text><text x="884" y="623" class="sub">Replay Â· Recovery Â· Metrics</text><text x="884" y="649" class="sub">Data lifecycle Â· Privacy controls</text>
 
   <path class="line" d="M310 245 H370"/><path class="line" d="M780 220 H850"/><path class="line" d="M780 260 H1160"/><path class="line" d="M780 340 H850"/><path class="line" d="M780 360 H1160"/><path class="line" d="M570 382 V490"/><path class="line" d="M720 382 C820 430 930 470 1000 490"/>
   <text x="76" y="756" class="sub">All cross-boundary actions are versioned events and pass through policy checks.</text>
