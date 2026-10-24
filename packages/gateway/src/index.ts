@@ -3,7 +3,7 @@ import type { TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
 import { ApprovalService, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
-import { MockAgent, type TaskRuntime } from '@agentcorps/runtime';
+import { MockAgent, type AgentAdapter, type TaskRuntime } from '@agentcorps/runtime';
 import {
   GenericWebhookAdapter,
   MessageDeduplicator,
@@ -119,6 +119,7 @@ export interface GatewayOptions {
   readonly channels?: ChannelGatewayOptions;
   readonly memory?: MemoryGatewayOptions;
   readonly security?: SecurityGatewayOptions;
+  readonly agentFactory?: (task: import('@agentcorps/domain').Task) => AgentAdapter;
 }
 
 const channelKinds: readonly ChannelKind[] = ['feishu', 'dingtalk', 'wecom', 'custom'];
@@ -351,7 +352,7 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
       if (taskId && request.method === 'POST' && action === 'run') {
         const task = runtime.getTask(taskId);
         if (!task) return sendJson(response, 404, { error: 'Task not found' });
-        void runtime.runTask(taskId, new MockAgent());
+        void runtime.runTask(taskId, options.agentFactory?.(task) ?? new MockAgent());
         return sendJson(response, 202, { taskId, status: 'accepted' });
       }
       if (taskId && request.method === 'POST' && action === 'cancel') return sendJson(response, 200, { task: runtime.cancelTask(taskId) });

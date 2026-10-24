@@ -145,14 +145,151 @@ export class JsonlAgentAdapter implements AgentAdapter {
   }
 }
 
-export function createCodexAdapter(command = 'codex', args: readonly string[] = []): JsonlAgentAdapter {
-  return new JsonlAgentAdapter({ id: 'codex-cli', displayName: 'OpenAI Codex CLI', command, args });
+export interface CommandAgentOptions {
+  readonly id: string;
+  readonly displayName: string;
+  readonly command: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly version?: string;
+  readonly capabilities?: AgentDescriptor['capabilities'];
+  readonly timeoutMs?: number;
+  readonly maxLineBytes?: number;
+  readonly promptPlacement?: 'argument' | 'stdin';
+  readonly outputFormat?: 'text' | 'jsonl';
 }
 
-export function createClaudeCodeAdapter(command = 'claude', args: readonly string[] = []): JsonlAgentAdapter {
-  return new JsonlAgentAdapter({ id: 'claude-code', displayName: 'Anthropic Claude Code', command, args });
+function textFromAgentEvent(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const event = value as Record<string, unknown>;
+  if (typeof event.text === 'string') return event.text;
+  if (typeof event.result === 'string') return event.result;
+  const item = event.item;
+  if (item && typeof item === 'object') {
+    const itemText = textFromAgentEvent(item);
+    if (itemText) return itemText;
+  }
+  const message = event.message;
+  if (message && typeof message === 'object') {
+    const messageText = textFromAgentEvent(message);
+    if (messageText) return messageText;
+  }
+  const content = event.content;
+  if (Array.isArray(content)) {
+    const text = content.map((part) => textFromAgentEvent(part)).filter((part): part is string => Boolean(part)).join('');
+    if (text) return text;
+  }
+  const delta = event.delta;
+  if (delta && typeof delta === 'object') return textFromAgentEvent(delta);
+  return undefined;
 }
 
-export function createCursorAdapter(command = 'cursor-agent', args: readonly string[] = []): JsonlAgentAdapter {
-  return new JsonlAgentAdapter({ id: 'cursor-cli', displayName: 'Cursor CLI', command, args });
+export class CommandAgentAdapter implements AgentAdapter {
+  readonly descriptor: AgentDescriptor;
+  private readonly options: CommandAgentOptions;
+
+  constructor(options: CommandAgentOptions) {
+    this.options = options;
+    this.descriptor = {
+      id: options.id,
+      displayName: options.displayName,
+      version: options.version ?? 'unprobed',
+      transport: 'stdio-jsonl',
+      capabilities: options.capabilities ?? [],
+    };
+  }
+
+  async execute(request: AgentRequest): Promise<void> {
+    const options = this.options;
+    const child = spawn(options.command, [...(options.args ?? []), ...(options.promptPlacement === 'stdin' ? [] : [request.task.objective])], {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
+    const maxLineBytes = options.maxLineBytes ?? 4 * 1024 * 1024;
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve();
+      };
+      timeout = setTimeout(() => { child.kill('SIGTERM'); finish(new Error(`Agent timed out after ${timeoutMs}ms`)); }, timeoutMs);
+      const abort = () => { child.kill('SIGTERM'); finish(new Error('Agent run cancelled')); };
+      if (request.signal.aborted) abort();
+      else request.signal.addEventListener('abort', abort, { once: true });
+      child.once('error', (error) => finish(error));
+      child.stderr.on('data', (chunk: Buffer) => request.emit(chunk.toString('utf8'), 'stderr'));
+      const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+      lines.on('line', (line) => {
+        if (Buffer.byteLength(line, 'utf8') > maxLineBytes) {
+          child.kill('SIGTERM');
+          finish(new Error(`Agent output line exceeds ${maxLineBytes} bytes`));
+          return;
+        }
+        if (options.outputFormat !== 'jsonl') {
+          request.emit(line, 'assistant');
+          return;
+        }
+        try {
+          const value: unknown = JSON.parse(line);
+          request.emit(textFromAgentEvent(value) ?? line, 'assistant');
+        } catch {
+          request.emit(line, 'stdout');
+        }
+      });
+      child.once('close', (code, signal) => {
+        if (settled) return;
+        if (code === 0) finish();
+        else finish(new Error(`Agent exited before completion (code=${code ?? 'null'}, signal=${signal ?? 'none'})`));
+      });
+      if (options.promptPlacement === 'stdin') child.stdin.end(`${request.task.objective}\n`);
+      else child.stdin.end();
+    });
+    await promise;
+  }
 }
+
+export interface CommandProbeResult {
+  readonly available: boolean;
+  readonly command: string;
+  readonly version?: string;
+  readonly exitCode?: number;
+  readonly output: string;
+}
+
+export async function probeCommand(command: string, args: readonly string[] = ['--version'], timeoutMs = 5_000): Promise<CommandProbeResult> {
+  return await new Promise((resolve) => {
+    const child = spawn(command, [...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const output: string[] = [];
+    let settled = false;
+    const finish = (result: CommandProbeResult): void => { if (!settled) { settled = true; resolve(result); } };
+    const timer = setTimeout(() => { child.kill('SIGTERM'); finish({ available: false, command, output: output.join('').trim() }); }, timeoutMs);
+    child.stdout.on('data', (chunk: Buffer) => output.push(chunk.toString('utf8')));
+    child.stderr.on('data', (chunk: Buffer) => output.push(chunk.toString('utf8')));
+    child.once('error', () => { clearTimeout(timer); finish({ available: false, command, output: output.join('').trim() }); });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      const text = output.join('').trim();
+      finish({ available: code === 0, command, ...(code === 0 && text ? { version: text.split('\\n')[0] } : {}), ...(code === null ? {} : { exitCode: code }), output: text });
+    });
+  });
+}
+
+export function createCodexAdapter(command = 'codex', args: readonly string[] = ['exec', '--json']): CommandAgentAdapter {
+  return new CommandAgentAdapter({ id: 'codex-cli', displayName: 'OpenAI Codex CLI', command, args, outputFormat: 'jsonl' });
+}
+
+export function createClaudeCodeAdapter(command = 'claude', args: readonly string[] = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages']): CommandAgentAdapter {
+  return new CommandAgentAdapter({ id: 'claude-code', displayName: 'Anthropic Claude Code', command, args, outputFormat: 'jsonl' });
+}
+
+export function createCursorAdapter(command = 'agent', args: readonly string[] = ['-p', '--output-format', 'stream-json', '--stream-partial-output']): CommandAgentAdapter {
+  return new CommandAgentAdapter({ id: 'cursor-cli', displayName: 'Cursor CLI', command, args, outputFormat: 'jsonl' });
+}
+

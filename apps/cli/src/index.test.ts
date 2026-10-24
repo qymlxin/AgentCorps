@@ -15,6 +15,17 @@ describe('CLI', () => {
     expect(stdout).toContain('run.output');
   });
 
+  it('runs a task with a configured command agent', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-command-'));
+    try {
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Command', '--objective', 'run external command', '--data-dir', directory])).stdout) as { id: string };
+      const script = "process.stdin.on('data',()=>console.log('external agent completed'))";
+      const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--data-dir', directory, '--agent', 'command', '--agent-command', process.execPath, '--agent-arg', '-e', '--agent-arg', script])).stdout) as { status: string };
+      expect(result.status).toBe('succeeded');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it('shares persistent tasks between CLI invocations', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-'));
     try {

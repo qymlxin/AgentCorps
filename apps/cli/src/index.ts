@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { JsonlAgentAdapter } from '@agentcorps/adapters';
+import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, JsonlAgentAdapter } from '@agentcorps/adapters';
+import type { AgentAdapter } from '@agentcorps/runtime';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
 import { JsonlMemoryStore, MemoryService } from '@agentcorps/memory';
@@ -18,7 +19,8 @@ Commands:
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
   task show TASK_ID [--data-dir PATH]       Show a task and its events
-  task run TASK_ID [--data-dir PATH]        Run a task with the configured mock agent
+  task run TASK_ID [--agent mock|codex|claude-code|cursor|command] [--data-dir PATH]
+       [--agent-command PATH] [--agent-arg ARG]
   task cancel TASK_ID [--data-dir PATH]    Cancel a task
   task retry TASK_ID [--data-dir PATH]     Requeue a failed or cancelled task
   memory save --scope S --content C       Save global/workspace/session memory
@@ -47,6 +49,27 @@ function requiredFlag(name: string): string {
 function taskId(value: string | undefined): TaskId {
   if (!value) usage();
   return value as TaskId;
+}
+
+function repeatedFlag(name: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < process.argv.length; index += 1) if (process.argv[index] === name && process.argv[index + 1]) values.push(process.argv[index + 1]!);
+  return values;
+}
+
+function agentForRun(): AgentAdapter {
+  const selected = flag('--agent') ?? 'mock';
+  const command = flag('--agent-command');
+  const args = repeatedFlag('--agent-arg');
+  if (selected === 'mock') return new MockAgent();
+  if (selected === 'codex') return args.length ? createCodexAdapter(command ?? 'codex', args) : createCodexAdapter(command ?? 'codex');
+  if (selected === 'claude-code') return args.length ? createClaudeCodeAdapter(command ?? 'claude', args) : createClaudeCodeAdapter(command ?? 'claude');
+  if (selected === 'cursor') return args.length ? createCursorAdapter(command ?? 'agent', args) : createCursorAdapter(command ?? 'agent');
+  if (selected === 'command') {
+    if (!command) throw new Error('--agent-command is required for --agent command');
+    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, args, outputFormat: 'text', promptPlacement: 'argument' });
+  }
+  throw new Error(`Unknown agent: ${selected}`);
 }
 
 function dataDirectory(): string {
@@ -81,7 +104,7 @@ async function main(): Promise<void> {
     if (host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('Remote gateway binding requires --token');
     const dataDir = dataDirectory();
     const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? '*' : undefined);
-    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}), memory: { service: memoryService() } };
+    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}), memory: { service: memoryService() }, agentFactory: () => agentForRun() };
     const server = await listenGateway(runtime(), port, host, new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))), gatewayOptions);
     console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);
     return;
@@ -148,7 +171,7 @@ async function main(): Promise<void> {
     return;
   }
   if (action === 'run') {
-    const task = await local.runTask(id, new MockAgent());
+    const task = await local.runTask(id, agentForRun());
     console.log(JSON.stringify(task, null, 2));
     return;
   }
