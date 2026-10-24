@@ -4,17 +4,9 @@
 
 ## 统一边界
 
-`packages/channels` 将飞书、钉钉、企业微信和自研 App 的 webhook 输入归一化为 `InboundMessage`：
+`packages/channels` 将飞书、钉钉、企业微信和自研 App 的 webhook 输入归一化为 `InboundMessage`。飞书事件、钉钉机器人消息和企业微信明文消息现在有独立适配器；平台回调签名算法和消息格式均有本地 fixture。企业微信加密 XML 的 AES 解密、平台回调响应和真实账号探测仍属于部署前验证项。
 
-- 渠道类型
-- 外部消息 ID
-- 外部用户 ID
-- 外部会话 ID
-- 文本内容
-- 接收时间
-- 原始 payload（只在受控边界内保留）
-
-出站消息使用 `OutboundMessage`，适配器负责转换为具体渠道格式。核心会话和任务层不依赖任何渠道 SDK。
+渠道入站去重、会话映射和投递状态可以通过 `SqliteChannelStateStore` 持久化；默认内存实现仅适合开发和测试。
 
 ## 安全基线
 

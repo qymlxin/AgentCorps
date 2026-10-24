@@ -57,7 +57,7 @@ describe('gateway', () => {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Expected TCP address');
     const base = `http://127.0.0.1:${address.port}`;
-    const payload = JSON.stringify({ message: { message_id: 'm1', conversation_id: 'c1', text: 'prepare report' }, sender: { sender_id: 'u1' } });
+    const payload = JSON.stringify({ header: { event_id: 'evt-1' }, event: { message: { message_id: 'm1', chat_id: 'c1', message_type: 'text', content: JSON.stringify({ text: 'prepare report' }) }, sender: { sender_id: { open_id: 'u1' } } } });
     try {
       const headers = { 'content-type': 'application/json', 'x-agentcorps-signature': signHmacSha256(payload, secret) };
       const first = await fetch(`${base}/channels/feishu/webhook`, { method: 'POST', headers, body: payload });
@@ -67,7 +67,7 @@ describe('gateway', () => {
       const duplicate = await fetch(`${base}/channels/feishu/webhook`, { method: 'POST', headers, body: payload });
       expect(await duplicate.json()).toMatchObject({ accepted: false, duplicate: true });
       const outbound = await fetch(`${base}/channels/feishu/outbound`, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'c1', text: 'received' }) });
-      expect(await outbound.json()).toMatchObject({ payload: { conversation_id: 'c1' } });
+      expect(await outbound.json()).toMatchObject({ payload: { receive_id: 'c1', msg_type: 'text', content: JSON.stringify({ text: 'received' }) } });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }

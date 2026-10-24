@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDingTalkTokenProvider, createWecomTokenProvider, FeishuTenantTokenProvider, GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, OAuthClientCredentialsTokenProvider, OAuthHttpChannelConnector, signHmacSha256, SpacedRateLimiter, verifyHmacSha256 } from './index.js';
+import { createDingTalkTokenProvider, createWecomTokenProvider, DingTalkRobotAdapter, FeishuEventAdapter, FeishuTenantTokenProvider, GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, OAuthClientCredentialsTokenProvider, OAuthHttpChannelConnector, signDingTalkCallback, signFeishuEvent, signHmacSha256, signWecomCallback, SpacedRateLimiter, verifyDingTalkCallbackSignature, verifyFeishuEventSignature, verifyHmacSha256, verifyWecomCallbackSignature, WecomMessageAdapter } from './index.js';
 
 describe('channel adapters', () => {
   it('normalizes a webhook message and formats an outbound reply', () => {
@@ -113,6 +113,22 @@ describe('channel adapters', () => {
     await expect(connector.send({ channel: 'feishu', externalConversationId: 'c1', text: 'one' }, {})).resolves.toMatchObject({ statusCode: 200 });
     await expect(connector.send({ channel: 'feishu', externalConversationId: 'c1', text: 'two' }, {})).resolves.toMatchObject({ statusCode: 200 });
     expect(tokenRequests).toBe(3);
+  });
+
+
+  it('parses official vendor message fixtures and verifies callback signatures', () => {
+    const feishuBody = JSON.stringify({ header: { event_id: 'evt-1' }, event: { message: { message_id: 'om-1', chat_id: 'oc-1', message_type: 'text', content: JSON.stringify({ text: 'hello' }) }, sender: { sender_id: { open_id: 'ou-1' } } } });
+    expect(new FeishuEventAdapter().parseInbound(JSON.parse(feishuBody))).toMatchObject({ externalMessageId: 'om-1', externalConversationId: 'oc-1', externalUserId: 'ou-1', text: 'hello' });
+    const feishuSignature = signFeishuEvent(feishuBody, '1700000000', 'nonce-1', 'encrypt-key');
+    expect(verifyFeishuEventSignature(feishuBody, { timestamp: '1700000000', nonce: 'nonce-1', signature: feishuSignature }, 'encrypt-key')).toBe(true);
+
+    expect(new DingTalkRobotAdapter().parseInbound({ msgId: 'msg-1', conversationId: 'cid-1', senderStaffId: 'staff-1', text: { content: 'hi' } })).toMatchObject({ externalMessageId: 'msg-1', externalConversationId: 'cid-1', externalUserId: 'staff-1', text: 'hi' });
+    const dingTimestamp = String(Date.now());
+    expect(verifyDingTalkCallbackSignature(dingTimestamp, signDingTalkCallback(dingTimestamp, 'ding-secret'), 'ding-secret')).toBe(true);
+
+    expect(new WecomMessageAdapter().parseInbound({ MsgId: 'wx-1', FromUserName: 'user-1', ToUserName: 'corp-1', Content: 'hello' })).toMatchObject({ externalMessageId: 'wx-1', externalConversationId: 'corp-1', externalUserId: 'user-1', text: 'hello' });
+    const wecomTimestamp = String(Math.floor(Date.now() / 1000));
+    expect(verifyWecomCallbackSignature('wecom-token', wecomTimestamp, 'nonce', 'encrypted', signWecomCallback('wecom-token', wecomTimestamp, 'nonce', 'encrypted'))).toBe(true);
   });
 
 

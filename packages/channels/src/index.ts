@@ -149,3 +149,5 @@ export function verifyHmacSha256(body: string, signature: string, secret: string
 }
 
 export * from './provider.js';
+export * from './platform.js';
+export * from './state.js';

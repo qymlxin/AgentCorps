@@ -5,12 +5,16 @@ import { ApprovalService, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine,
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
 import { MockAgent, type AgentAdapter, type TaskRuntime } from '@agentcorps/runtime';
 import {
+  FeishuEventAdapter,
   GenericWebhookAdapter,
-  MessageDeduplicator,
+  InMemoryChannelStateStore,
+  DingTalkRobotAdapter,
+  WecomMessageAdapter,
   verifyHmacSha256,
   type ChannelAdapter,
   type ChannelConnector,
   type ChannelKind,
+  type ChannelStateStore,
   type InboundMessage,
   type OutboundMessage,
 } from '@agentcorps/channels';
@@ -101,6 +105,7 @@ export interface ChannelGatewayOptions {
   readonly defaultMode?: SessionMode;
   readonly workspaceId?: string;
   readonly sessionIds?: Map<string, string>;
+  readonly stateStore?: ChannelStateStore;
 }
 
 export interface MemoryGatewayOptions {
@@ -133,7 +138,12 @@ function channelKindFrom(pathname: string): ChannelKind | undefined {
 }
 
 function defaultChannelAdapters(): Record<ChannelKind, ChannelAdapter> {
-  return Object.fromEntries(channelKinds.map((kind) => [kind, new GenericWebhookAdapter(kind)])) as Record<ChannelKind, ChannelAdapter>;
+  return {
+    feishu: new FeishuEventAdapter(),
+    dingtalk: new DingTalkRobotAdapter(),
+    wecom: new WecomMessageAdapter(),
+    custom: new GenericWebhookAdapter('custom'),
+  };
 }
 
 function channelSessionKey(message: Pick<InboundMessage, 'channel' | 'externalConversationId'>): string {
@@ -154,7 +164,7 @@ function isAuthorized(request: IncomingMessage, options: GatewayOptions): boolea
 
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
   const adapters = { ...defaultChannelAdapters(), ...options.channels?.adapters };
-  const deduplicator = new MessageDeduplicator();
+  const stateStore = options.channels?.stateStore ?? new InMemoryChannelStateStore();
   const sessionIds = options.channels?.sessionIds ?? new Map<string, string>();
   const memories = options.memory?.service ?? new MemoryService(new InMemoryMemoryStore());
   const policyEngine = options.security?.engine ?? new PolicyEngine(new InMemoryAuditLog());
@@ -206,13 +216,17 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           if (!outbound.externalConversationId || !outbound.text.trim()) throw new Error('Outbound channel message requires conversation and text');
           const payload = adapter.formatOutbound(outbound);
           const connector = options.channels?.connectors?.[kind];
-          if (connector) return sendJson(response, 202, { channel: kind, delivered: await connector.send(outbound, payload), payload });
+          if (connector) {
+            const delivered = await connector.send(outbound, payload);
+            stateStore.recordDelivery(`${kind}:${outbound.externalConversationId}:${outbound.replyToExternalMessageId ?? outbound.text}`, outbound, delivered);
+            return sendJson(response, 202, { channel: kind, delivered, payload });
+          }
           return sendJson(response, 200, { channel: kind, payload });
         }
         const inbound = adapter.parseInbound(body);
-        if (!deduplicator.accept(inbound)) return sendJson(response, 200, { accepted: false, duplicate: true, externalMessageId: inbound.externalMessageId });
+        if (!stateStore.claimInbound(inbound.channel, inbound.externalMessageId)) return sendJson(response, 200, { accepted: false, duplicate: true, externalMessageId: inbound.externalMessageId });
         const key = channelSessionKey(inbound);
-        let session = sessions.get(sessionIds.get(key) ?? '');
+        let session = sessions.get(stateStore.getSessionId(key) ?? sessionIds.get(key) ?? '');
         if (!session || session.archivedAt) {
           session = sessions.create({
             workspaceId: options.channels?.workspaceId ?? `channel:${kind}`,
@@ -220,6 +234,7 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
             mode: options.channels?.defaultMode ?? 'work',
           });
           sessionIds.set(key, session.id);
+          stateStore.setSessionId(key, session.id);
         }
         const message = sessions.appendMessage({ sessionId: session.id, role: 'user', content: inbound.text });
         const task = runtime.createTask({
