@@ -23,9 +23,15 @@ importers:
 
   apps/cli:
     dependencies:
+      '@agentcorps/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
       '@agentcorps/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@agentcorps/gateway':
+        specifier: workspace:*
+        version: link:../../packages/gateway
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime

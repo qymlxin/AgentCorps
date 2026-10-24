@@ -26,6 +26,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - [多 Agent 协同与委派](docs/09-orchestration.md)
 - [MCP 客户端](docs/10-mcp.md)
 - [安全策略与沙箱边界](docs/11-security-runtime.md)
+- [CLI 使用指南](docs/12-cli.md)
 - [决策记录](docs/decisions/)
 - [系统架构图（SVG）](docs/diagrams/system-architecture.svg)
 
