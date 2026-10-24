@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ApprovalService, createDefaultProfile, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, SqliteApprovalStore, SqliteAuditLog } from './index.js';
+import { ApprovalService, buildSandboxInvocation, createDefaultProfile, CredentialProxy, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, SandboxedCommandRunner, SqliteApprovalStore, SqliteAuditLog } from './index.js';
 
 describe('PolicyEngine', () => {
   const request = (capability: 'fs.read' | 'fs.write' | 'process.exec' | 'network.connect' | 'secret.read', extra: Record<string, string> = {}) => ({ requestId: `${capability}-1`, taskId: 'task-1', capability, ...extra });
@@ -56,6 +56,20 @@ describe('PolicyEngine', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('builds constrained macOS and container invocations and redacts proxied credentials', async () => {
+    const macos = buildSandboxInvocation({ backend: 'macos', executable: 'node', args: ['-e', 'console.log(1)'], workspaceRoot: '/workspace', writableRoots: ['/workspace/tmp'], network: 'none' }, 'darwin');
+    expect(macos.command).toBe('sandbox-exec');
+    expect(macos.args[0]).toBe('-p');
+    expect(macos.args.join(' ')).toContain('deny network');
+    const container = buildSandboxInvocation({ backend: 'container', containerImage: 'node:22', executable: 'node', workspaceRoot: '/workspace', network: 'none', env: { API_TOKEN: 'secret' } });
+    expect(container).toMatchObject({ command: 'docker', args: expect.arrayContaining(['--network', 'none', '--env', 'API_TOKEN=secret', 'node:22']) });
+    const proxy = new CredentialProxy({ get: async () => 'token-value' }, new Set(['API_TOKEN']));
+    await expect(proxy.issue(['NOT_ALLOWED'])).rejects.toThrow('not allowed');
+    await proxy.issue(['API_TOKEN']);
+    expect(proxy.redact('authorization token-value')).toBe('authorization [REDACTED]');
+    expect(SandboxedCommandRunner).toBeDefined();
   });
 
   it('requires approval for execution, network, secrets, and work-mode writes', () => {

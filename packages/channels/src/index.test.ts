@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, signHmacSha256, verifyHmacSha256 } from './index.js';
+import { createDingTalkTokenProvider, createWecomTokenProvider, FeishuTenantTokenProvider, GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, OAuthClientCredentialsTokenProvider, OAuthHttpChannelConnector, signHmacSha256, SpacedRateLimiter, verifyHmacSha256 } from './index.js';
 
 describe('channel adapters', () => {
   it('normalizes a webhook message and formats an outbound reply', () => {
@@ -52,6 +52,69 @@ describe('channel adapters', () => {
     expect(receivedRequest?.headers).toMatchObject({ authorization: 'Bearer test', 'content-type': 'application/json' });
     expect(receivedRequest?.body).toBe('{"content":"hello"}');
   });
+
+  it('uses the official vendor token endpoints and caches their responses', async () => {
+    const urls: string[] = [];
+    const fetchImpl = async (input: string | URL | Request) => {
+      urls.push(String(input));
+      if (String(input).includes('feishu')) return new Response(JSON.stringify({ tenant_access_token: 'feishu-token', expire: 7200 }), { status: 200 });
+      if (String(input).includes('dingtalk')) return new Response(JSON.stringify({ access_token: 'dingtalk-token', expires_in: 7200 }), { status: 200 });
+      return new Response(JSON.stringify({ access_token: 'wecom-token', expires_in: 7200 }), { status: 200 });
+    };
+    const feishu = new FeishuTenantTokenProvider({ appId: 'app', appSecret: 'secret', fetchImpl });
+    const dingtalk = createDingTalkTokenProvider('key', 'secret', fetchImpl);
+    const wecom = createWecomTokenProvider('corp', 'secret', fetchImpl);
+    await expect(feishu.getToken()).resolves.toBe('feishu-token');
+    await expect(feishu.getToken()).resolves.toBe('feishu-token');
+    await expect(dingtalk.getToken()).resolves.toBe('dingtalk-token');
+    await expect(wecom.getToken()).resolves.toBe('wecom-token');
+    expect(urls).toEqual(expect.arrayContaining(['https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', 'https://oapi.dingtalk.com/gettoken?appkey=key&appsecret=secret', 'https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=corp&corpsecret=secret']));
+    expect(urls.filter((url) => url.includes('feishu'))).toHaveLength(1);
+  });
+
+
+  it('caches OAuth tokens and refreshes once after an unauthorized delivery', async () => {
+    let tokenRequests = 0;
+    const authorizationHeaders: string[] = [];
+    const tokenProvider = new OAuthClientCredentialsTokenProvider({
+      tokenEndpoint: 'https://auth.example/token', clientId: 'client', clientSecret: 'secret',
+      fetchImpl: async (input) => {
+        if (String(input) === 'https://auth.example/token') {
+          tokenRequests += 1;
+          return new Response(JSON.stringify({ access_token: `token-${tokenRequests}`, expires_in: 300 }), { status: 200 });
+        }
+        throw new Error('Unexpected token endpoint');
+      },
+    });
+    const connector = new OAuthHttpChannelConnector({
+      endpoint: 'https://vendor.example/send', tokenProvider, rateLimiter: new SpacedRateLimiter(1_000, 2), backoffMs: 1,
+      fetchImpl: async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        authorizationHeaders.push(headers.get('authorization') ?? '');
+        return new Response('{}', { status: authorizationHeaders.length === 1 ? 401 : 200 });
+      },
+    });
+    await expect(connector.send({ channel: 'feishu', externalConversationId: 'c1', text: 'hello' }, {})).resolves.toEqual({ statusCode: 200, attempts: 1 });
+    expect(tokenRequests).toBe(2);
+    expect(authorizationHeaders).toEqual(['Bearer token-1', 'Bearer token-2']);
+    await expect(tokenProvider.getToken()).resolves.toBe('token-2');
+  });
+  it('refreshes an unauthorized token independently for each delivery', async () => {
+    let tokenRequests = 0;
+    let deliveries = 0;
+    const tokenProvider = new OAuthClientCredentialsTokenProvider({
+      tokenEndpoint: 'https://auth.example/token', clientId: 'client', clientSecret: 'secret',
+      fetchImpl: async () => new Response(JSON.stringify({ access_token: `token-${++tokenRequests}`, expires_in: 300 }), { status: 200 }),
+    });
+    const connector = new OAuthHttpChannelConnector({
+      endpoint: 'https://vendor.example/send', tokenProvider, maxAttempts: 1,
+      fetchImpl: async () => new Response('{}', { status: ++deliveries % 2 === 1 ? 401 : 200 }),
+    });
+    await expect(connector.send({ channel: 'feishu', externalConversationId: 'c1', text: 'one' }, {})).resolves.toMatchObject({ statusCode: 200 });
+    await expect(connector.send({ channel: 'feishu', externalConversationId: 'c1', text: 'two' }, {})).resolves.toMatchObject({ statusCode: 200 });
+    expect(tokenRequests).toBe(3);
+  });
+
 
   it('rejects duplicate messages and verifies signatures', () => {
     const dedupe = new MessageDeduplicator(1000, () => 1000);

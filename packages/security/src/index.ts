@@ -164,6 +164,9 @@ export function createDefaultProfile(workspaceRoot: string, level: SandboxLevel 
   };
 }
 
+export * from './sandbox.js';
+
+
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'consumed';
 
 export interface Approval {
