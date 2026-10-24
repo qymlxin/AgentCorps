@@ -1,5 +1,28 @@
 import { spawn } from 'node:child_process';
 
+import type { ApprovalService, PolicyEngine, SecurityContext, ToolRequest } from './index.js';
+
+export interface SecureCommandExecutionOptions extends SandboxedCommandOptions {
+  readonly request: ToolRequest;
+  readonly context: SecurityContext;
+  readonly approvalId?: string;
+}
+
+export class SecureCommandExecutor {
+  constructor(private readonly policy: PolicyEngine, private readonly approvals: ApprovalService, private readonly runner = new SandboxedCommandRunner()) {}
+
+  async run(options: SecureCommandExecutionOptions): Promise<SandboxedCommandResult> {
+    const decision = this.policy.evaluate(options.request, options.context);
+    if (decision.decision === 'deny') throw new Error(`Security policy denied command: ${decision.reason}`);
+    if (decision.decision === 'approval_required') {
+      if (!options.approvalId) throw new Error('Approved command execution requires approvalId');
+      const approval = this.approvals.consume(options.approvalId);
+      if (!approval || approval.request.requestId !== options.request.requestId) throw new Error('Approval is missing, expired, or does not match the command request');
+    }
+    return await this.runner.run(options);
+  }
+}
+
 export type SandboxBackend = 'macos' | 'container';
 export type SandboxNetwork = 'none' | 'full';
 

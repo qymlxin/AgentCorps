@@ -15,6 +15,18 @@ export interface A2ATaskResponse {
   readonly history?: readonly unknown[];
 }
 
+export class A2AProtocolError extends Error {
+  constructor(readonly operation: string, readonly code: number | string, message: string, readonly data?: unknown) {
+    super(`A2A ${operation} failed (${code}): ${message}`);
+    this.name = 'A2AProtocolError';
+  }
+}
+
+export interface A2ARequestOptions {
+  readonly signal?: AbortSignal;
+  readonly idempotencyKey?: string;
+}
+
 export interface A2AClientOptions {
   readonly agentUrl: string;
   readonly bearerToken?: string;
@@ -34,25 +46,59 @@ export class A2AClient {
 
   async getAgentCard(): Promise<A2AAgentCard> {
     const response = await this.fetchImpl(new URL('/.well-known/agent-card.json', this.options.agentUrl), { headers: this.headers(), signal: AbortSignal.timeout(this.options.timeoutMs ?? 30_000) });
-    if (!response.ok) throw new Error(`A2A agent card failed: HTTP ${response.status}`);
-    return await response.json() as A2AAgentCard;
+    if (!response.ok) throw new A2AProtocolError('agent-card', response.status, `HTTP ${response.status}`);
+    const card = await response.json() as unknown;
+    return validateAgentCard(card);
   }
 
-  async sendMessage(text: string, contextId?: string): Promise<A2ATaskResponse> {
+  async sendMessage(text: string, contextId?: string, requestOptions: A2ARequestOptions = {}): Promise<A2ATaskResponse> {
     if (!text.trim()) throw new Error('A2A message cannot be empty');
     const response = await this.fetchImpl(this.options.agentUrl, {
-      method: 'POST', headers: { ...this.headers(), 'content-type': 'application/json' }, signal: AbortSignal.timeout(this.options.timeoutMs ?? 30_000),
+      method: 'POST', headers: { ...this.headers(), ...(requestOptions.idempotencyKey ? { 'idempotency-key': requestOptions.idempotencyKey } : {}), 'content-type': 'application/json' }, signal: requestSignal(this.options.timeoutMs ?? 30_000, requestOptions.signal),
       body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method: 'message/send', params: { message: { messageId: `agentcorps-${crypto.randomUUID()}`, role: 'user', parts: [{ kind: 'text', text }] }, ...(contextId ? { contextId } : {}) } }),
     });
-    if (!response.ok) throw new Error(`A2A send failed: HTTP ${response.status}`);
-    const body = await response.json() as { result?: A2ATaskResponse; error?: { code: number; message: string } };
-    if (body.error) throw new Error(`A2A ${body.error.code}: ${body.error.message}`);
-    return body.result ?? {};
+    if (!response.ok) throw new A2AProtocolError('message/send', response.status, `HTTP ${response.status}`);
+    const body = await response.json() as { result?: unknown; error?: { code: number; message: string; data?: unknown } };
+    if (body.error) throw new A2AProtocolError('message/send', body.error.code, body.error.message, body.error.data);
+    if (!body.result || typeof body.result !== 'object') throw new A2AProtocolError('message/send', 'invalid_result', 'Response is missing a task result');
+    return body.result as A2ATaskResponse;
+  }
+
+  async cancelTask(taskId: string, requestOptions: A2ARequestOptions = {}): Promise<A2ATaskResponse> {
+    if (!taskId.trim()) throw new Error('A2A taskId cannot be empty');
+    const response = await this.fetchImpl(this.options.agentUrl, {
+      method: 'POST', headers: { ...this.headers(), ...(requestOptions.idempotencyKey ? { 'idempotency-key': requestOptions.idempotencyKey } : {}), 'content-type': 'application/json' }, signal: requestSignal(this.options.timeoutMs ?? 30_000, requestOptions.signal),
+      body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method: 'tasks/cancel', params: { id: taskId } }),
+    });
+    if (!response.ok) throw new A2AProtocolError('tasks/cancel', response.status, `HTTP ${response.status}`);
+    const body = await response.json() as { result?: unknown; error?: { code: number; message: string; data?: unknown } };
+    if (body.error) throw new A2AProtocolError('tasks/cancel', body.error.code, body.error.message, body.error.data);
+    if (!body.result || typeof body.result !== 'object') throw new A2AProtocolError('tasks/cancel', 'invalid_result', 'Response is missing a task result');
+    return body.result as A2ATaskResponse;
   }
 
   private headers(): Record<string, string> {
     return this.options.bearerToken ? { authorization: `Bearer ${this.options.bearerToken}` } : {};
   }
+}
+
+function validateAgentCard(value: unknown): A2AAgentCard {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new A2AProtocolError('agent-card', 'invalid_card', 'Agent Card must be an object');
+  const card = value as Record<string, unknown>;
+  if (typeof card.name !== 'string' || !card.name.trim()) throw new A2AProtocolError('agent-card', 'invalid_card', 'Agent Card name is required');
+  if (typeof card.url !== 'string' || !/^https?:\/\//.test(card.url)) throw new A2AProtocolError('agent-card', 'invalid_card', 'Agent Card url must be an HTTP(S) URL');
+  return {
+    name: card.name,
+    url: card.url,
+    ...(typeof card.description === 'string' ? { description: card.description } : {}),
+    ...(typeof card.version === 'string' ? { version: card.version } : {}),
+    ...(card.capabilities && typeof card.capabilities === 'object' && !Array.isArray(card.capabilities) ? { capabilities: card.capabilities as Record<string, unknown> } : {}),
+  };
+}
+
+function requestSignal(timeoutMs: number, signal: AbortSignal | undefined): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 export interface AcpInitializeResult {

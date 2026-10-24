@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { InMemoryWorkflowStore, JsonlWorkflowStore, WorkflowEngine, type WorkflowDefinition } from './index.js';
+import { InMemoryWorkflowStore, JsonlWorkflowStore, TaskRuntimeWorkflowExecutor, WorkflowEngine, type WorkflowDefinition, type WorkflowTaskRuntime } from './index.js';
 
 const definition: WorkflowDefinition = {
   id: 'release', workspaceId: 'ws', sessionId: 'session',
@@ -46,6 +46,21 @@ describe('WorkflowEngine', () => {
     expect(run.nodeStates.publish).toMatchObject({ status: 'failed', attempts: 2 });
     expect(run.nodeStates.notify?.status).toBe('skipped');
     expect(compensated).toEqual(['prepare']);
+  });
+
+
+  it('binds workflow nodes to task runtime execution and cancellation', async () => {
+    const created: string[] = [];
+    const cancelled: string[] = [];
+    const runtime: WorkflowTaskRuntime = {
+      createTask: (input) => { const id = `task-${input.title}`; created.push(id); return { id }; },
+      runTask: async (taskId: string) => ({ status: taskId.includes('cancel') ? 'cancelled' : 'succeeded' }),
+      cancelTask: (taskId: string) => { cancelled.push(taskId); },
+    };
+    const executor = new TaskRuntimeWorkflowExecutor(runtime, { create: () => ({}) }, definition);
+    await executor.execute({ run: { id: 'run', definitionId: definition.id, status: 'running', nodeStates: {}, completedOrder: [], createdAt: '', updatedAt: '' }, node: definition.nodes[0]!, attempt: 1, signal: new AbortController().signal });
+    expect(created).toEqual(['task-Prepare']);
+    expect(cancelled).toEqual([]);
   });
 
   it('recovers running nodes from JSONL and resumes them', async () => {

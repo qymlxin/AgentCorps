@@ -18,6 +18,7 @@ export interface WorkflowDefinition {
   readonly id: string;
   readonly workspaceId: string;
   readonly sessionId: string;
+  readonly mode?: 'code' | 'work';
   readonly nodes: readonly WorkflowNode[];
 }
 
@@ -55,6 +56,40 @@ export interface WorkflowCompensationContext {
 
 export interface WorkflowExecutor {
   execute(context: WorkflowExecutionContext): Promise<void>;
+}
+
+export interface WorkflowTaskRuntime {
+  createTask(input: { workspaceId: string; sessionId: string; title: string; objective: string; mode: 'code' | 'work' }): { id: string };
+  runTask(taskId: string, agent: unknown): Promise<{ status: string }>;
+  cancelTask(taskId: string, reason?: string): unknown;
+}
+
+export interface WorkflowAgentFactory {
+  create(node: WorkflowNode, taskId: string): unknown;
+}
+
+export class TaskRuntimeWorkflowExecutor implements WorkflowExecutor {
+  constructor(private readonly runtime: WorkflowTaskRuntime, private readonly agents: WorkflowAgentFactory, private readonly definition: WorkflowDefinition) {}
+
+  async execute(context: WorkflowExecutionContext): Promise<void> {
+    const task = this.runtime.createTask({
+      workspaceId: this.definition.workspaceId,
+      sessionId: this.definition.sessionId,
+      title: context.node.title,
+      objective: context.node.objective,
+      mode: this.definition.mode ?? 'code',
+    });
+    const cancel = () => this.runtime.cancelTask(task.id, 'Workflow node cancelled');
+    if (context.signal.aborted) cancel();
+    else context.signal.addEventListener('abort', cancel, { once: true });
+    try {
+      const result = await this.runtime.runTask(task.id, this.agents.create(context.node, task.id));
+      if (result.status !== 'succeeded') throw new Error(`Workflow task ${task.id} ended with status ${result.status}`);
+      if (context.signal.aborted) throw new Error('Workflow node cancelled');
+    } finally {
+      context.signal.removeEventListener('abort', cancel);
+    }
+  }
 }
 
 export interface WorkflowStore {

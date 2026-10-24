@@ -20,7 +20,7 @@
 
 ## 执行与凭据
 
-`packages/security` 提供 `SandboxedCommandRunner`：macOS 后端生成 `sandbox-exec` profile，容器后端生成 Docker `--network none`、工作区挂载和固定工作目录参数。`CredentialProxy` 只向白名单变量发放凭据，并在 stdout/stderr 返回前做脱敏。调用方仍必须先通过 `PolicyEngine` 和 `ApprovalService`，这些执行器不会自行提升权限。
+`packages/security` 提供 `SandboxedCommandRunner` 和 `SecureCommandExecutor`：前者负责 macOS/容器命令隔离、输出上限、超时和凭据脱敏，后者先执行 `PolicyEngine` 决策，再要求并消费匹配的一次性审批，最后才启动沙箱进程。调用方仍必须明确提供工作区、镜像和凭据白名单。
 
 人工审批实体支持过期、批准、拒绝、一次性消费以及 SQLite 持久化；审批必须绑定完整工具请求，不能用宽泛批准覆盖不同参数。
 

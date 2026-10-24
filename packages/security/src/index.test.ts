@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ApprovalService, buildSandboxInvocation, createDefaultProfile, CredentialProxy, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, SandboxedCommandRunner, SqliteApprovalStore, SqliteAuditLog } from './index.js';
+import { ApprovalService, buildSandboxInvocation, createDefaultProfile, CredentialProxy, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, SandboxedCommandRunner, SecureCommandExecutor, SqliteApprovalStore, SqliteAuditLog } from './index.js';
 
 describe('PolicyEngine', () => {
   const request = (capability: 'fs.read' | 'fs.write' | 'process.exec' | 'network.connect' | 'secret.read', extra: Record<string, string> = {}) => ({ requestId: `${capability}-1`, taskId: 'task-1', capability, ...extra });
@@ -70,6 +70,22 @@ describe('PolicyEngine', () => {
     await proxy.issue(['API_TOKEN']);
     expect(proxy.redact('authorization token-value')).toBe('authorization [REDACTED]');
     expect(SandboxedCommandRunner).toBeDefined();
+  });
+
+
+  it('requires a matching one-time approval before privileged execution', async () => {
+    const engine = new PolicyEngine(new InMemoryAuditLog());
+    const approvals = new ApprovalService(new InMemoryApprovalStore(), () => '2026-10-24T00:00:00.000Z', () => 'approval-1');
+    const request = { requestId: 'exec-1', taskId: 'task-1', capability: 'process.exec' as const, command: 'node' };
+    const policy = engine.evaluate(request, { mode: 'code', profile: createDefaultProfile('/workspace', 'S2') });
+    const approval = approvals.create(request, policy);
+    approvals.approve(approval.id, 'user-1');
+    class FakeRunner extends SandboxedCommandRunner {
+      override async run(): Promise<{ exitCode: number; stdout: string; stderr: string }> { return { exitCode: 0, stdout: 'ok', stderr: '' }; }
+    }
+    const executor = new SecureCommandExecutor(engine, approvals, new FakeRunner());
+    await expect(executor.run({ backend: 'container', containerImage: 'node:22', executable: 'node', workspaceRoot: '/workspace', request, context: { mode: 'code', profile: createDefaultProfile('/workspace', 'S2') }, approvalId: approval.id })).resolves.toMatchObject({ exitCode: 0 });
+    await expect(executor.run({ backend: 'container', containerImage: 'node:22', executable: 'node', workspaceRoot: '/workspace', request, context: { mode: 'code', profile: createDefaultProfile('/workspace', 'S2') }, approvalId: approval.id })).rejects.toThrow('Approval is missing');
   });
 
   it('requires approval for execution, network, secrets, and work-mode writes', () => {

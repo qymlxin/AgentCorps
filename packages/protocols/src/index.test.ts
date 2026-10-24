@@ -22,6 +22,21 @@ describe('A2A client', () => {
     }
   });
 
+  it('rejects malformed Agent Cards and supports cancellation with abort signals', async () => {
+    const calls: string[] = [];
+    const client = new A2AClient({
+      agentUrl: 'http://127.0.0.1:1',
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        if (calls.length === 1) return new Response(JSON.stringify({ name: 'invalid' }), { status: 200 });
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { id: 'task-1', status: { state: 'canceled' } } }), { status: 200 });
+      },
+    });
+    await expect(client.getAgentCard()).rejects.toThrow('invalid_card');
+    await expect(client.cancelTask('task-1', { idempotencyKey: 'cancel-1' })).resolves.toMatchObject({ id: 'task-1' });
+  });
+
+
   it('negotiates ACP over stdio, receives updates, and prompts a session', async () => {
     const updates: unknown[] = [];
     const script = "const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); if(m.method==='session/new') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'acp-session-1'}})); if(m.method==='session/prompt'){console.log(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{update:'working'}})); console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}}));}});";
