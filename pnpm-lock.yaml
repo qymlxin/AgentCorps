@@ -52,6 +52,8 @@ importers:
 
   packages/domain: {}
 
+  packages/extensions: {}
+
   packages/gateway:
     dependencies:
       '@agentcorps/domain':
