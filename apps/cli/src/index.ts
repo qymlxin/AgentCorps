@@ -12,7 +12,7 @@ function usage(): never {
 
 Commands:
   demo                                      Run an in-memory local demo
-  serve [--port 43210] [--data-dir PATH]    Start the local HTTP/SSE gateway
+  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--data-dir PATH]    Start the local HTTP/SSE gateway
   task create --title T --objective O       Create a persistent task
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
@@ -65,9 +65,14 @@ async function main(): Promise<void> {
 
   if (command === 'serve') {
     const port = Number(flag('--port') ?? '43210');
+    const host = flag('--host') ?? '127.0.0.1';
+    const token = flag('--token');
+    if (host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('Remote gateway binding requires --token');
     const dataDir = dataDirectory();
-    const server = await listenGateway(runtime(), port, '127.0.0.1', new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))));
-    console.log(`AgentCorps gateway listening on http://127.0.0.1:${(server.address() as { port: number }).port}`);
+    const corsOrigin = flag('--cors-origin');
+    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}) };
+    const server = await listenGateway(runtime(), port, host, new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))), gatewayOptions);
+    console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);
     return;
   }
 

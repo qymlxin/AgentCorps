@@ -28,6 +28,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - [安全策略与沙箱边界](docs/11-security-runtime.md)
 - [CLI 使用指南](docs/12-cli.md)
 - [会话互通](docs/13-sessions.md)
+- [远程访问与手机查看](docs/14-remote-access.md)
 - [决策记录](docs/decisions/)
 - [系统架构图（SVG）](docs/diagrams/system-architecture.svg)
 

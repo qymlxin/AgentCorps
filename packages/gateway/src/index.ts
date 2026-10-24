@@ -42,8 +42,35 @@ function messageRole(value: unknown): MessageRole {
   throw new Error('Message role must be user, agent, system, or tool');
 }
 
-export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore())): Server {
+export interface GatewayOptions {
+  readonly bearerToken?: string;
+  readonly corsOrigin?: string;
+}
+
+function setCors(response: ServerResponse, options: GatewayOptions): void {
+  if (!options.corsOrigin) return;
+  response.setHeader('access-control-allow-origin', options.corsOrigin);
+  response.setHeader('access-control-allow-headers', 'authorization, content-type');
+  response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+}
+
+function isAuthorized(request: IncomingMessage, options: GatewayOptions): boolean {
+  if (!options.bearerToken) return true;
+  return request.headers.authorization === `Bearer ${options.bearerToken}`;
+}
+
+export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
   return createServer(async (request, response) => {
+    setCors(response, options);
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+    if (!isAuthorized(request, options) && request.url !== '/health') {
+      sendJson(response, 401, { error: 'Bearer token required' });
+      return;
+    }
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       const { pathname } = url;
@@ -119,8 +146,8 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
   });
 }
 
-export function listenGateway(runtime: TaskRuntime, port = 43210, host = '127.0.0.1', sessions = new SessionService(new InMemorySessionStore())): Promise<Server> {
-  const server = createGatewayServer(runtime, sessions);
+export function listenGateway(runtime: TaskRuntime, port = 43210, host = '127.0.0.1', sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Promise<Server> {
+  const server = createGatewayServer(runtime, sessions, options);
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {
