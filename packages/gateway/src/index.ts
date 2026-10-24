@@ -1,7 +1,16 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { TaskId } from '@agentcorps/domain';
-import { InMemorySessionStore, SessionService, type MessageRole } from '@agentcorps/session';
+import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
 import { MockAgent, type TaskRuntime } from '@agentcorps/runtime';
+import {
+  GenericWebhookAdapter,
+  MessageDeduplicator,
+  verifyHmacSha256,
+  type ChannelAdapter,
+  type ChannelKind,
+  type InboundMessage,
+  type OutboundMessage,
+} from '@agentcorps/channels';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -13,7 +22,7 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.end(payload);
 }
 
-async function readJson(request: IncomingMessage): Promise<JsonRecord> {
+async function readBody(request: IncomingMessage): Promise<Buffer> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -22,9 +31,17 @@ async function readJson(request: IncomingMessage): Promise<JsonRecord> {
     if (size > MAX_BODY_BYTES) throw new Error('Request body exceeds 1 MiB');
     chunks.push(buffer);
   }
-  const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  return Buffer.concat(chunks);
+}
+
+function parseJsonBody(body: Buffer): JsonRecord {
+  const value: unknown = JSON.parse(body.toString('utf8') || '{}');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Request body must be a JSON object');
   return value as JsonRecord;
+}
+
+async function readJson(request: IncomingMessage): Promise<JsonRecord> {
+  return parseJsonBody(await readBody(request));
 }
 
 function taskIdFrom(pathname: string): TaskId | undefined {
@@ -42,9 +59,34 @@ function messageRole(value: unknown): MessageRole {
   throw new Error('Message role must be user, agent, system, or tool');
 }
 
+export interface ChannelGatewayOptions {
+  readonly adapters?: Partial<Record<ChannelKind, ChannelAdapter>>;
+  readonly webhookSecrets?: Partial<Record<ChannelKind, string>>;
+  readonly defaultMode?: SessionMode;
+  readonly workspaceId?: string;
+  readonly sessionIds?: Map<string, string>;
+}
+
 export interface GatewayOptions {
   readonly bearerToken?: string;
   readonly corsOrigin?: string;
+  readonly channels?: ChannelGatewayOptions;
+}
+
+const channelKinds: readonly ChannelKind[] = ['feishu', 'dingtalk', 'wecom', 'custom'];
+
+function channelKindFrom(pathname: string): ChannelKind | undefined {
+  const match = /^\/channels\/([^/]+)\/(webhook|outbound)$/.exec(pathname);
+  if (!match || !channelKinds.includes(match[1] as ChannelKind)) return undefined;
+  return match[1] as ChannelKind;
+}
+
+function defaultChannelAdapters(): Record<ChannelKind, ChannelAdapter> {
+  return Object.fromEntries(channelKinds.map((kind) => [kind, new GenericWebhookAdapter(kind)])) as Record<ChannelKind, ChannelAdapter>;
+}
+
+function channelSessionKey(message: Pick<InboundMessage, 'channel' | 'externalConversationId'>): string {
+  return `${message.channel}:${message.externalConversationId}`;
 }
 
 function setCors(response: ServerResponse, options: GatewayOptions): void {
@@ -60,6 +102,9 @@ function isAuthorized(request: IncomingMessage, options: GatewayOptions): boolea
 }
 
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
+  const adapters = { ...defaultChannelAdapters(), ...options.channels?.adapters };
+  const deduplicator = new MessageDeduplicator();
+  const sessionIds = options.channels?.sessionIds ?? new Map<string, string>();
   return createServer(async (request, response) => {
     setCors(response, options);
     if (request.method === 'OPTIONS') {
@@ -77,6 +122,57 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
       if (request.method === 'GET' && pathname === '/health') {
         sendJson(response, 200, { status: 'ok', service: 'agentcorps-gateway', version: '0.1.0' });
         return;
+      }
+      if (request.method === 'GET' && pathname === '/channels') {
+        sendJson(response, 200, { channels: channelKinds.map((kind) => ({ kind, configured: Boolean(options.channels?.adapters?.[kind] || options.channels?.webhookSecrets?.[kind]) })) });
+        return;
+      }
+      const channelPath = /^\/channels\/([^/]+)\/(webhook|outbound)$/.exec(pathname);
+      if (request.method === 'POST' && channelPath) {
+        const kind = channelKindFrom(pathname);
+        if (!kind) return sendJson(response, 404, { error: 'Unknown channel' });
+        const adapter = adapters[kind];
+        const rawBody = await readBody(request);
+        const secret = options.channels?.webhookSecrets?.[kind];
+        if (secret && channelPath[2] === 'webhook') {
+          const signatureHeader = request.headers['x-agentcorps-signature'] ?? request.headers['x-signature'];
+          const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+          if (!signature || !verifyHmacSha256(rawBody.toString('utf8'), signature, secret)) {
+            return sendJson(response, 401, { error: 'Invalid channel signature' });
+          }
+        }
+        const body = parseJsonBody(rawBody);
+        if (channelPath[2] === 'outbound') {
+          const outbound: OutboundMessage = {
+            channel: kind,
+            externalConversationId: String(body.externalConversationId ?? body.conversationId ?? ''),
+            text: String(body.text ?? ''),
+            ...(body.replyToExternalMessageId ? { replyToExternalMessageId: String(body.replyToExternalMessageId) } : {}),
+          };
+          if (!outbound.externalConversationId || !outbound.text.trim()) throw new Error('Outbound channel message requires conversation and text');
+          return sendJson(response, 200, { channel: kind, payload: adapter.formatOutbound(outbound) });
+        }
+        const inbound = adapter.parseInbound(body);
+        if (!deduplicator.accept(inbound)) return sendJson(response, 200, { accepted: false, duplicate: true, externalMessageId: inbound.externalMessageId });
+        const key = channelSessionKey(inbound);
+        let session = sessions.get(sessionIds.get(key) ?? '');
+        if (!session || session.archivedAt) {
+          session = sessions.create({
+            workspaceId: options.channels?.workspaceId ?? `channel:${kind}`,
+            title: `${kind}:${inbound.externalConversationId}`,
+            mode: options.channels?.defaultMode ?? 'work',
+          });
+          sessionIds.set(key, session.id);
+        }
+        const message = sessions.appendMessage({ sessionId: session.id, role: 'user', content: inbound.text });
+        const task = runtime.createTask({
+          workspaceId: session.workspaceId,
+          sessionId: session.id,
+          title: `Channel message: ${inbound.text.slice(0, 80)}`,
+          objective: inbound.text,
+          mode: session.mode,
+        });
+        return sendJson(response, 202, { accepted: true, channel: kind, externalMessageId: inbound.externalMessageId, session, message, task });
       }
       if (request.method === 'GET' && pathname === '/sessions') {
         sendJson(response, 200, { sessions: sessions.list() });

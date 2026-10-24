@@ -58,6 +58,9 @@ importers:
 
   packages/gateway:
     dependencies:
+      '@agentcorps/channels':
+        specifier: workspace:*
+        version: link:../channels
       '@agentcorps/domain':
         specifier: workspace:*
         version: link:../domain
