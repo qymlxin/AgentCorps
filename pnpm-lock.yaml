@@ -60,6 +60,8 @@ importers:
         specifier: workspace:*
         version: link:../domain
 
+  packages/security: {}
+
 packages:
 
   '@esbuild/aix-ppc64@0.28.2':
