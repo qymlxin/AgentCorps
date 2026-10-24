@@ -20,6 +20,8 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - [安全与威胁模型](docs/03-security-model.md)
 - [协议与生态调研](docs/04-agent-landscape.md)
 - [实施路线图](docs/05-roadmap.md)
+- [本地控制面 API](docs/06-local-api.md)
+- [Agent 适配器](docs/07-agent-adapters.md)
 - [决策记录](docs/decisions/)
 - [系统架构图（SVG）](docs/diagrams/system-architecture.svg)
 

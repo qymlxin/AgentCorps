@@ -30,6 +30,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/runtime
 
+  packages/adapters:
+    dependencies:
+      '@agentcorps/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@agentcorps/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+
   packages/domain: {}
 
   packages/gateway:
