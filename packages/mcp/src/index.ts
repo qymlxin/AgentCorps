@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { ApprovalService, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
 
 export interface McpTool {
   readonly name: string;
@@ -138,4 +139,58 @@ export class McpStdioClient {
       this.pending.delete(id);
     }
   }
+}
+
+export interface GuardedMcpToolCall {
+  readonly status: 'completed' | 'approval_required';
+  readonly requestId: string;
+  readonly result?: McpCallResult;
+  readonly approvalId?: string;
+}
+
+export interface GuardedMcpToolExecutorOptions {
+  readonly client: McpStdioClient;
+  readonly policy: PolicyEngine;
+  readonly approvals: ApprovalService;
+  readonly context: SecurityContext;
+  readonly capabilityFor: (tool: McpTool) => SecurityCapability;
+  readonly id?: () => string;
+}
+
+export class GuardedMcpToolExecutor {
+  private readonly id: () => string;
+
+  constructor(private readonly options: GuardedMcpToolExecutorOptions) {
+    this.id = options.id ?? (() => `mcp-request-${crypto.randomUUID()}`);
+  }
+
+  async callTool(taskId: string, tool: McpTool, arguments_: Record<string, unknown> = {}, approvalId?: string, requestId?: string): Promise<GuardedMcpToolCall> {
+    const request: ToolRequest = {
+      requestId: requestId ?? this.id(),
+      taskId,
+      capability: this.options.capabilityFor(tool),
+      metadata: { tool: tool.name, arguments: JSON.stringify(arguments_) },
+    };
+    const decision = this.options.policy.evaluate(request, this.options.context);
+    if (decision.decision === 'deny') throw new Error(`MCP tool denied: ${decision.reason}`);
+    if (decision.decision === 'approval_required') {
+      if (!approvalId) {
+        const approval = this.options.approvals.create(request, decision);
+        return { status: 'approval_required', approvalId: approval.id, requestId: request.requestId };
+      }
+      const approval = this.options.approvals.get(approvalId);
+      if (!approval || approval.status !== 'approved' || !sameToolRequest(approval.request, request)) {
+        throw new Error('MCP approval does not match this tool request');
+      }
+      if (!this.options.approvals.consume(approvalId)) throw new Error('MCP approval could not be consumed');
+    }
+    return { status: 'completed', requestId: request.requestId, result: await this.options.client.callTool(tool.name, arguments_) };
+  }
+}
+
+function sameToolRequest(left: ToolRequest, right: ToolRequest): boolean {
+  return left.requestId === right.requestId
+    && left.taskId === right.taskId
+    && left.capability === right.capability
+    && JSON.stringify(left.metadata ?? {}) === JSON.stringify(right.metadata ?? {});
 }

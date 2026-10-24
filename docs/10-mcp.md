@@ -13,7 +13,14 @@
 5. 调用 `tools/call`
 6. 处理 JSON-RPC 错误、超时、进程退出和关闭
 
-当前传输是换行分隔的 JSON-RPC。工具结果仍是外部不可信数据，正式运行时必须先转换为 AgentCorps 能力并经过策略检查、输出限制和审计。
+`GuardedMcpToolExecutor` 在工具调用前把 MCP 工具映射为明确的 AgentCorps `SecurityCapability`，并通过 `PolicyEngine` 产生审计记录：
+
+- `deny` 直接拒绝，不启动工具调用。
+- `approval_required` 返回一次性 approval ID；调用方批准后必须用相同 request ID、task、工具名和参数再次提交。
+- 匹配的批准会被消费，然后才执行 `tools/call`。
+- 工具结果仍被视为外部不可信数据，不能自动变成指令或秘密记忆。
+
+工具调用者必须显式提供 capability resolver，连接成功或工具名称本身不会授予权限。
 
 ## 尚未接入核心调度
 

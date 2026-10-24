@@ -20,6 +20,7 @@ export interface ToolRequest {
   readonly path?: string;
   readonly command?: string;
   readonly host?: string;
+  readonly metadata?: Readonly<Record<string, string>>;
 }
 
 export interface SecurityContext {

@@ -83,7 +83,11 @@ importers:
         specifier: workspace:*
         version: link:../session
 
-  packages/mcp: {}
+  packages/mcp:
+    dependencies:
+      '@agentcorps/security':
+        specifier: workspace:*
+        version: link:../security
 
   packages/memory: {}
 
