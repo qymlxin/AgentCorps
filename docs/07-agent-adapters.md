@@ -57,7 +57,30 @@ agentcorps task run TASK_ID --agent cursor
 agentcorps task run TASK_ID --agent command --agent-command ./my-agent --agent-arg --headless
 ```
 
-`probeCommand` 只执行配置的版本参数并返回可用性、版本首行和退出状态，不会启动 Agent 任务。真实 Agent 的文件修改、命令执行、网络和秘密权限仍必须由 AgentCorps 安全策略与隔离执行器控制。
+`probeAgent` 在执行版本命令后返回可用性、版本首行、退出状态和完整输出，并生成带有能力映射的 `AgentDescriptor`。能力映射由调用方显式提供，不会因为“命令可执行”就自动授予文件、进程、网络或秘密权限：
+
+```ts
+const result = await probeAgent({
+  id: 'local-agent',
+  displayName: 'Local Agent',
+  command: 'agent',
+  capabilities: [{
+    name: 'workspace.read',
+    description: 'Read workspace files',
+    risk: 'low',
+    scopes: ['workspace'],
+  }],
+});
+```
+
+CLI 可直接探测配置命令：
+
+```bash
+agentcorps task probe --command agent
+agentcorps task probe --agent codex
+```
+
+探测结果只描述本机命令状态；真正执行任务时仍需经过运行时策略、审批和后续沙箱执行器。
 
 
 适配器不负责授予权限，也不把凭据写入子进程输入。运行时必须先通过策略判断，再传入明确的工作区、环境变量和能力范围；后续沙箱执行器会在适配器之外提供更强的文件系统和网络隔离。

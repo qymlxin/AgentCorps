@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, JsonlAgentAdapter } from '@agentcorps/adapters';
+import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, probeAgent, type AgentProbeOptions } from '@agentcorps/adapters';
 import type { AgentAdapter } from '@agentcorps/runtime';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
@@ -23,6 +23,7 @@ Commands:
        [--agent-command PATH] [--agent-arg ARG]
   task cancel TASK_ID [--data-dir PATH]    Cancel a task
   task retry TASK_ID [--data-dir PATH]     Requeue a failed or cancelled task
+  task probe [--agent codex|claude-code|cursor] [--command PATH]    Probe an Agent executable
   memory save --scope S --content C       Save global/workspace/session memory
        [--workspace-id ID] [--session-id ID] [--sensitivity public|private|secret]
   memory search --query Q                 Search visible memory
@@ -70,6 +71,16 @@ function agentForRun(): AgentAdapter {
     return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, args, outputFormat: 'text', promptPlacement: 'argument' });
   }
   throw new Error(`Unknown agent: ${selected}`);
+}
+
+function agentProbeOptions(): AgentProbeOptions {
+  const selected = flag('--agent') ?? 'command';
+  const command = flag('--command') ?? flag('--agent-command');
+  if (selected === 'codex') return { id: 'codex-cli', displayName: 'OpenAI Codex CLI', command: command ?? 'codex' };
+  if (selected === 'claude-code') return { id: 'claude-code', displayName: 'Anthropic Claude Code', command: command ?? 'claude' };
+  if (selected === 'cursor') return { id: 'cursor-cli', displayName: 'Cursor CLI', command: command ?? 'agent' };
+  if (selected === 'command' && command) return { id: 'configured-command', displayName: 'Configured command agent', command };
+  throw new Error('--command or --agent-command is required for command probing');
 }
 
 function dataDirectory(): string {
@@ -185,8 +196,7 @@ async function main(): Promise<void> {
     return;
   }
   if (action === 'probe') {
-    const adapter = new JsonlAgentAdapter({ id: 'configured-process', displayName: 'Configured process', command: requiredFlag('--command') });
-    console.log(JSON.stringify(adapter.descriptor, null, 2));
+    console.log(JSON.stringify(await probeAgent(agentProbeOptions()), null, 2));
     return;
   }
   usage();

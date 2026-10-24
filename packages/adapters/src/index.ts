@@ -300,6 +300,32 @@ export async function probeCommand(command: string, args: readonly string[] = ['
   });
 }
 
+export interface AgentProbeOptions {
+  readonly id: string;
+  readonly displayName: string;
+  readonly command: string;
+  readonly versionArgs?: readonly string[];
+  readonly capabilities?: AgentDescriptor['capabilities'];
+}
+
+export interface AgentProbeResult extends CommandProbeResult {
+  readonly descriptor: AgentDescriptor;
+}
+
+export async function probeAgent(options: AgentProbeOptions, timeoutMs = 5_000): Promise<AgentProbeResult> {
+  const result = await probeCommand(options.command, options.versionArgs ?? ['--version'], timeoutMs);
+  return {
+    ...result,
+    descriptor: {
+      id: options.id,
+      displayName: options.displayName,
+      version: result.version ?? 'unavailable',
+      transport: 'stdio-jsonl',
+      capabilities: options.capabilities ?? [],
+    },
+  };
+}
+
 export function createCodexAdapter(command = 'codex', args: readonly string[] = ['exec', '--json']): CommandAgentAdapter {
   return new CommandAgentAdapter({ id: 'codex-cli', displayName: 'OpenAI Codex CLI', command, args, outputFormat: 'jsonl' });
 }

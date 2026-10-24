@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentRequest } from '@agentcorps/runtime';
-import { CommandAgentAdapter, JsonlAgentAdapter, probeCommand } from './index.js';
+import { CommandAgentAdapter, JsonlAgentAdapter, probeAgent, probeCommand } from './index.js';
 
 describe('local process adapters', () => {
   it('streams JSON frames and tolerates plain diagnostic lines', async () => {
@@ -94,6 +94,17 @@ describe('local process adapters', () => {
     expect(output[0]).not.toContain('do not expose this secret');
   });
 
+  it('probes a provider and returns a descriptor with mapped capabilities', async () => {
+    const result = await probeAgent({
+      id: 'fixture-agent',
+      displayName: 'Fixture Agent',
+      command: process.execPath,
+      versionArgs: ['-e', "process.stdout.write('fixture 2.0.0\\nsecond line')"],
+      capabilities: [{ name: 'workspace.read', description: 'Read workspace files', risk: 'low', scopes: ['workspace'] }],
+    });
+    expect(result).toMatchObject({ available: true, version: 'fixture 2.0.0', descriptor: { id: 'fixture-agent', version: 'fixture 2.0.0', transport: 'stdio-jsonl' } });
+    expect(result.descriptor.capabilities[0]?.name).toBe('workspace.read');
+  });
   it('probes an executable without treating a missing command as a crash', async () => {
     await expect(probeCommand(process.execPath, ['-e', "console.log('fixture 1.0.0')"])).resolves.toMatchObject({ available: true, version: 'fixture 1.0.0' });
     await expect(probeCommand('agentcorps-command-that-does-not-exist')).resolves.toMatchObject({ available: false });

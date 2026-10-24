@@ -40,6 +40,13 @@ describe('CLI', () => {
     }
   });
 
+  it('probes a configured command and reports its version and descriptor', async () => {
+    const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'probe', '--command', process.execPath])).stdout) as { available: boolean; descriptor: { transport: string; version: string } };
+    expect(result.available).toBe(true);
+    expect(result.descriptor.transport).toBe('stdio-jsonl');
+    expect(result.descriptor.version).not.toBe('unavailable');
+  });
+
   it('shares persistent tasks between CLI invocations', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-'));
     try {
