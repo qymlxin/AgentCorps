@@ -197,6 +197,7 @@ export interface TaskRuntimeOptions {
   readonly store?: EventStore;
   readonly policy?: Policy;
   readonly memory?: MemoryService;
+  readonly recoverInterruptedTasks?: boolean;
 }
 
 export class TaskRuntime {
@@ -216,6 +217,13 @@ export class TaskRuntime {
     this.id = options.id ?? ((prefix) => `${prefix}-${crypto.randomUUID()}`);
     this.store.subscribe((event) => this.project(event));
     for (const event of this.store.list()) this.project(event);
+    if (options.recoverInterruptedTasks ?? true) this.recoverInterruptedTasks();
+  }
+
+  recoverInterruptedTasks(reason = 'Run interrupted by process restart'): readonly Task[] {
+    const interrupted = this.listTasks().filter((task) => task.status === 'running');
+    for (const task of interrupted) this.changeStatus(task, 'failed', reason);
+    return interrupted.map((task) => this.tasks.get(task.id)!).filter(Boolean);
   }
 
   createTask(input: CreateTaskInput): Task {

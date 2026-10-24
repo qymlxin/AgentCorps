@@ -20,6 +20,29 @@ describe('durable task runtime', () => {
     }
   });
 
+  it('marks a persisted running task as failed when a new runtime recovers after restart', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-runtime-recovery-'));
+    const path = join(directory, 'events.jsonl');
+    const first = new TaskRuntime({ store: new JsonlEventStore(path), id: (prefix) => `${prefix}-first`, now: () => '2026-10-24T00:00:00.000Z' });
+    const task = first.createTask({ workspaceId: 'ws', sessionId: 'session', title: 'Interrupted', objective: 'recover this run', mode: 'code' });
+    const running = first.runTask(task.id, {
+      descriptor: { id: 'blocking', displayName: 'Blocking', version: '1', transport: 'mock', capabilities: [] },
+      async execute(request) {
+        await new Promise<void>((resolve) => request.signal.addEventListener('abort', () => resolve(), { once: true }));
+      },
+    });
+    try {
+      while (first.getTask(task.id)?.status !== 'running') await new Promise((resolve) => setImmediate(resolve));
+      const recovered = new TaskRuntime({ store: new JsonlEventStore(path), now: () => '2026-10-24T00:00:01.000Z' });
+      expect(recovered.getTask(task.id)?.status).toBe('failed');
+      expect(recovered.store.list(task.id).at(-1)?.payload).toMatchObject({ to: 'failed', reason: 'Run interrupted by process restart' });
+    } finally {
+      first.cancelTask(task.id);
+      await running;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('cancels an active run and supports retry', async () => {
     const runtime = new TaskRuntime({ id: (prefix) => `${prefix}-${Math.random()}`, now: () => '2026-10-24T00:00:00.000Z' });
     const task = runtime.createTask({ workspaceId: 'ws', sessionId: 'session', title: 'Cancel', objective: 'cancel me', mode: 'code' });
