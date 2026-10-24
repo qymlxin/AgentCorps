@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { A2AClient, protocolDescriptors } from './index.js';
+import { A2AClient, AcpStdioClient, protocolDescriptors } from './index.js';
 
 describe('A2A client', () => {
   it('discovers an agent card and sends a message', async () => {
@@ -19,6 +19,22 @@ describe('A2A client', () => {
       expect(protocolDescriptors.a2a.maturity).toBe('experimental');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('negotiates ACP over stdio, receives updates, and prompts a session', async () => {
+    const updates: unknown[] = [];
+    const script = "const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); if(m.method==='session/new') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'acp-session-1'}})); if(m.method==='session/prompt'){console.log(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{update:'working'}})); console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}}));}});";
+    const client = new AcpStdioClient({ command: process.execPath, args: ['-e', script], onUpdate: (update) => updates.push(update) });
+    try {
+      expect((await client.initialize()).protocolVersion).toBe(1);
+      const session = await client.newSession('/tmp');
+      expect(session.sessionId).toBe('acp-session-1');
+      expect((await client.prompt(session.sessionId, 'fix the test')).stopReason).toBe('end_turn');
+      expect(updates).toEqual([{ update: 'working' }]);
+      expect(protocolDescriptors.acp.maturity).toBe('experimental');
+    } finally {
+      client.close();
     }
   });
 });
