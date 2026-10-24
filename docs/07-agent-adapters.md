@@ -82,5 +82,6 @@ agentcorps task probe --agent codex
 
 探测结果只描述本机命令状态；真正执行任务时仍需经过运行时策略、审批和后续沙箱执行器。
 
+`JsonlAgentAdapter` 会把任务的 `sessionId` 同时放入 legacy frame。所有本地进程适配器默认设置 `AGENTCORPS_SESSION_ID` 环境变量，也可以通过 `sessionIdEnv` 改名。这样厂商包装器可以用稳定的 AgentCorps session 标识选择自己的恢复参数；适配器不会假设 Codex、Claude Code、Cursor 的恢复 CLI 参数完全一致。
 
 适配器不负责授予权限，也不把凭据写入子进程输入。运行时必须先通过策略判断，再传入明确的工作区、环境变量和能力范围；后续沙箱执行器会在适配器之外提供更强的文件系统和网络隔离。

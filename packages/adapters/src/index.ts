@@ -14,6 +14,7 @@ export interface JsonlAgentOptions {
   readonly capabilities?: AgentDescriptor['capabilities'];
   readonly timeoutMs?: number;
   readonly maxLineBytes?: number;
+  readonly sessionIdEnv?: string;
 }
 
 interface OutputFrame {
@@ -75,7 +76,7 @@ export class JsonlAgentAdapter implements AgentAdapter {
     const options = this.options;
     const child = spawn(options.command, [...(options.args ?? [])], {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: { ...process.env, ...options.env, [options.sessionIdEnv ?? 'AGENTCORPS_SESSION_ID']: request.task.sessionId },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const maxLineBytes = options.maxLineBytes ?? 1024 * 1024;
@@ -154,6 +155,7 @@ export class JsonlAgentAdapter implements AgentAdapter {
           objective: buildAgentPrompt(request),
           mode: request.task.mode,
           workspaceId: request.task.workspaceId,
+          sessionId: request.task.sessionId,
           ...(memories.length ? { memory: memories.map((memory) => ({ scope: memory.scope, content: memory.content })) } : {}),
         },
       }) + '\n');
@@ -174,6 +176,7 @@ export interface CommandAgentOptions {
   readonly capabilities?: AgentDescriptor['capabilities'];
   readonly timeoutMs?: number;
   readonly maxLineBytes?: number;
+  readonly sessionIdEnv?: string;
   readonly promptPlacement?: 'argument' | 'stdin';
   readonly outputFormat?: 'text' | 'jsonl';
 }
@@ -223,7 +226,7 @@ export class CommandAgentAdapter implements AgentAdapter {
     const prompt = buildAgentPrompt(request);
     const child = spawn(options.command, [...(options.args ?? []), ...(options.promptPlacement === 'stdin' ? [] : [prompt])], {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: { ...process.env, ...options.env, [options.sessionIdEnv ?? 'AGENTCORPS_SESSION_ID']: request.task.sessionId },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
