@@ -5,7 +5,7 @@ import { JsonlAgentAdapter } from '@agentcorps/adapters';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
 import { JsonlSessionStore, SessionService } from '@agentcorps/session';
-import { JsonlEventStore, MockAgent, TaskRuntime } from '@agentcorps/runtime';
+import { MockAgent, SqliteEventStore, TaskRuntime } from '@agentcorps/runtime';
 
 function usage(): never {
   console.error(`AgentCorps CLI 0.1.0
@@ -47,7 +47,7 @@ function dataDirectory(): string {
 }
 
 function runtime(): TaskRuntime {
-  return new TaskRuntime({ store: new JsonlEventStore(join(dataDirectory(), 'events.jsonl')) });
+  return new TaskRuntime({ store: new SqliteEventStore(join(dataDirectory(), 'agentcorps.db')) });
 }
 
 async function main(): Promise<void> {

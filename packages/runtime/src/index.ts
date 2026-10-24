@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
@@ -67,6 +68,77 @@ export class JsonlEventStore implements EventStore {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
+}
+
+interface SqliteStatement {
+  run(...parameters: unknown[]): unknown;
+  all(...parameters: unknown[]): unknown[];
+}
+
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
+const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+
+export class SqliteEventStore implements EventStore {
+  private readonly db: SqliteDatabase;
+  private readonly listeners = new Set<(event: TaskEvent) => void>();
+
+  constructor(filePath: string) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    this.db = new DatabaseSync(filePath);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS events (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        aggregate_type TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        correlation_id TEXT NOT NULL,
+        causation_id TEXT,
+        occurred_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS events_aggregate_idx ON events (aggregate_id, occurred_at);
+    `);
+  }
+
+  append(event: TaskEvent): void {
+    this.db.prepare(`INSERT INTO events (id, type, version, aggregate_type, aggregate_id, correlation_id, causation_id, occurred_at, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      event.id, event.type, event.version, event.aggregateType, event.aggregateId, event.correlationId, event.causationId ?? null, event.occurredAt, JSON.stringify(event.payload),
+    );
+    for (const listener of this.listeners) listener(event);
+  }
+
+  list(aggregateId?: string): readonly TaskEvent[] {
+    const rows = aggregateId
+      ? this.db.prepare('SELECT * FROM events WHERE aggregate_id = ? ORDER BY occurred_at, rowid').all(aggregateId)
+      : this.db.prepare('SELECT * FROM events ORDER BY occurred_at, rowid').all();
+    return rows.map((row) => {
+      const value = row as Record<string, unknown>;
+      return {
+        id: value.id as EventId,
+        type: value.type as TaskEvent['type'],
+        version: value.version as 1,
+        aggregateType: value.aggregate_type as TaskEvent['aggregateType'],
+        aggregateId: value.aggregate_id as string,
+        correlationId: value.correlation_id as string,
+        ...(value.causation_id ? { causationId: value.causation_id as EventId } : {}),
+        occurredAt: value.occurred_at as string,
+        payload: JSON.parse(value.payload as string),
+      } as TaskEvent;
+    });
+  }
+
+  subscribe(listener: (event: TaskEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  close(): void { this.db.close(); }
 }
 
 export interface AgentRequest {

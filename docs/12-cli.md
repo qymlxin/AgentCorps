@@ -28,7 +28,7 @@ agentcorps task cancel TASK_ID --data-dir ~/.agentcorps
 agentcorps task retry TASK_ID --data-dir ~/.agentcorps
 ```
 
-任务和事件由所有 CLI 进程共享同一个 JSONL 文件，因此重新打开终端后仍能查看历史。当前 `task run` 使用 mock Agent 验证生命周期；真实 Agent 适配器接入和 Agent 选择策略仍在后续功能中。
+任务和事件由所有 CLI 进程共享同一个 SQLite 数据库，因此重新打开终端后仍能查看历史。原始事件也可以通过 `JsonlEventStore` 导出或用于调试；当前 `task run` 使用 mock Agent 验证生命周期，真实 Agent 适配器接入和 Agent 选择策略仍在后续功能中。
 
 ## 启动本地控制面
 

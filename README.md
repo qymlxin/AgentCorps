@@ -32,6 +32,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - [Signal Room 控制台](docs/15-console.md)
 - [扩展生态清单](docs/16-extensions.md)
 - [聊天渠道适配](docs/17-channels.md)
+- [持久化与事件存储](docs/18-storage.md)
 - [决策记录](docs/decisions/)
 - [系统架构图（SVG）](docs/diagrams/system-architecture.svg)
 

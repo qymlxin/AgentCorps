@@ -20,7 +20,7 @@
 - `POST /sessions/:id/messages`：`role`、`content`，可选 `agentId`、`taskId`
 - `POST /sessions/:id/archive`
 
-CLI 启动网关时会在 `--data-dir` 下同时保存 `events.jsonl` 和 `sessions.jsonl`。桌面端、手机页面、飞书/钉钉/企业微信适配器应只调用这些控制面，不直接写文件。
+CLI 启动网关时会在 `--data-dir` 下同时保存 `agentcorps.db` 和 `sessions.jsonl`。桌面端、手机页面、飞书/钉钉/企业微信适配器应只调用这些控制面，不直接写文件。
 
 ## 后续工作
 
