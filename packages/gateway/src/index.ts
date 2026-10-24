@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
+import { ApprovalService, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
 import { MockAgent, type TaskRuntime } from '@agentcorps/runtime';
 import {
@@ -75,6 +76,18 @@ function memorySource(value: unknown): MemoryRecord['source'] {
   throw new Error('Memory source must be user, agent, or system');
 }
 
+function approvalRoute(pathname: string): { id?: string; action?: 'approve' | 'deny' | 'consume' } | undefined {
+  if (pathname === '/approvals') return {};
+  const match = /^\/approvals\/([^/]+)(?:\/(approve|deny|consume))?$/.exec(pathname);
+  if (!match || !match[1]) return undefined;
+  return { id: match[1], ...(match[2] ? { action: match[2] as 'approve' | 'deny' | 'consume' } : {}) };
+}
+
+function securityCapability(value: unknown): SecurityCapability {
+  if (value === 'fs.read' || value === 'fs.write' || value === 'process.exec' || value === 'network.connect' || value === 'secret.read') return value;
+  throw new Error('Unknown security capability');
+}
+
 function messageRole(value: unknown): MessageRole {
   if (value === 'user' || value === 'agent' || value === 'system' || value === 'tool') return value;
   throw new Error('Message role must be user, agent, system, or tool');
@@ -93,11 +106,19 @@ export interface MemoryGatewayOptions {
   readonly allowSensitiveSearch?: boolean;
 }
 
+export interface SecurityGatewayOptions {
+  readonly context: SecurityContext;
+  readonly engine?: PolicyEngine;
+  readonly approvals?: ApprovalService;
+  readonly allowApprovalDecisions?: boolean;
+}
+
 export interface GatewayOptions {
   readonly bearerToken?: string;
   readonly corsOrigin?: string;
   readonly channels?: ChannelGatewayOptions;
   readonly memory?: MemoryGatewayOptions;
+  readonly security?: SecurityGatewayOptions;
 }
 
 const channelKinds: readonly ChannelKind[] = ['feishu', 'dingtalk', 'wecom', 'custom'];
@@ -133,6 +154,8 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
   const deduplicator = new MessageDeduplicator();
   const sessionIds = options.channels?.sessionIds ?? new Map<string, string>();
   const memories = options.memory?.service ?? new MemoryService(new InMemoryMemoryStore());
+  const policyEngine = options.security?.engine ?? new PolicyEngine(new InMemoryAuditLog());
+  const approvals = options.security?.approvals ?? new ApprovalService(new InMemoryApprovalStore());
   return createServer(async (request, response) => {
     setCors(response, options);
     if (request.method === 'OPTIONS') {
@@ -201,6 +224,45 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           mode: session.mode,
         });
         return sendJson(response, 202, { accepted: true, channel: kind, externalMessageId: inbound.externalMessageId, session, message, task });
+      }
+      const approval = approvalRoute(pathname);
+      if (approval) {
+        if (!options.security) return sendJson(response, 503, { error: 'Approval routes require an explicit security context' });
+        if (request.method === 'GET' && pathname === '/approvals') return sendJson(response, 200, { approvals: approvals.list() });
+        if (request.method === 'GET' && approval.id && !approval.action) {
+          const record = approvals.get(approval.id);
+          return record ? sendJson(response, 200, { approval: record }) : sendJson(response, 404, { error: 'Approval not found' });
+        }
+        if (request.method === 'POST' && pathname === '/approvals') {
+          const body = await readJson(request);
+          const toolRequest: ToolRequest = {
+            requestId: String(body.requestId ?? `gateway-request-${crypto.randomUUID()}`),
+            taskId: String(body.taskId ?? ''),
+            capability: securityCapability(body.capability),
+            ...(body.path ? { path: String(body.path) } : {}),
+            ...(body.command ? { command: String(body.command) } : {}),
+            ...(body.host ? { host: String(body.host) } : {}),
+          };
+          if (!toolRequest.taskId) throw new Error('Approval request requires taskId');
+          const policy = policyEngine.evaluate(toolRequest, options.security.context);
+          if (policy.decision === 'allow') return sendJson(response, 200, { decision: policy.decision, policy });
+          if (policy.decision === 'deny') return sendJson(response, 403, { decision: policy.decision, policy });
+          const record = approvals.create(toolRequest, policy, body.ttlMs === undefined ? undefined : Number(body.ttlMs));
+          return sendJson(response, 202, { decision: policy.decision, policy, approval: record });
+        }
+        if (request.method === 'POST' && approval.id && approval.action) {
+          if (approval.action !== 'consume' && options.security.allowApprovalDecisions === false) return sendJson(response, 403, { error: 'Approval decisions are disabled' });
+          if (approval.action === 'consume') {
+            const consumed = approvals.consume(approval.id);
+            return consumed ? sendJson(response, 200, { approval: consumed }) : sendJson(response, 409, { error: 'Approval is not approved or has expired' });
+          }
+          const body = await readJson(request);
+          const decidedBy = String(body.decidedBy ?? '');
+          const decisionReason = body.reason ? String(body.reason) : undefined;
+          const decided = approval.action === 'approve' ? approvals.approve(approval.id, decidedBy, decisionReason) : approvals.deny(approval.id, decidedBy, decisionReason);
+          return sendJson(response, 200, { approval: decided });
+        }
+        return sendJson(response, 404, { error: 'Approval route not found' });
       }
       const memoryId = memoryIdFrom(pathname);
       if (request.method === 'GET' && pathname === '/memory') {

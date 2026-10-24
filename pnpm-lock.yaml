@@ -73,6 +73,9 @@ importers:
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../runtime
+      '@agentcorps/security':
+        specifier: workspace:*
+        version: link:../security
       '@agentcorps/session':
         specifier: workspace:*
         version: link:../session

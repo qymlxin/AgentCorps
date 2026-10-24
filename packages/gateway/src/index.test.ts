@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { listenGateway } from './index.js';
 import { TaskRuntime } from '@agentcorps/runtime';
 import { signHmacSha256 } from '@agentcorps/channels';
+import { createDefaultProfile } from '@agentcorps/security';
 
 describe('gateway', () => {
   it('exposes health, task creation, and task event history', async () => {
@@ -63,6 +64,24 @@ describe('gateway', () => {
       expect((await fetch(`${base}/memory/${memory.memory.id}`, { method: 'DELETE' })).status).toBe(200);
       const afterDelete = await fetch(`${base}/memory?query=concise&workspaceId=ws`);
       expect(await afterDelete.json()).toMatchObject({ memories: [] });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+  it('creates and resolves policy-backed approval requests', async () => {
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { security: { context: { mode: 'code', profile: createDefaultProfile('/workspace', 'S2') } } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      const created = await fetch(`${base}/approvals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'task-approval', capability: 'process.exec', command: 'pnpm test' }) });
+      expect(created.status).toBe(202);
+      const body = await created.json() as { approval: { id: string; status: string } };
+      expect(body.approval.status).toBe('pending');
+      const approved = await fetch(`${base}/approvals/${body.approval.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decidedBy: 'local-user' }) });
+      expect((await approved.json() as { approval: { status: string } }).approval.status).toBe('approved');
+      const consumed = await fetch(`${base}/approvals/${body.approval.id}/consume`, { method: 'POST' });
+      expect((await consumed.json() as { approval: { status: string } }).approval.status).toBe('consumed');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
