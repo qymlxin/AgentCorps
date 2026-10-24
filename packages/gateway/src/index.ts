@@ -325,8 +325,8 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
       }
       if (request.method === 'GET' && pathname === '/events') {
         response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
-        response.write(`event: ready\\ndata: ${JSON.stringify({ service: 'agentcorps-gateway' })}\\n\\n`);
-        const unsubscribe = runtime.store.subscribe((event) => response.write(`event: ${event.type}\\ndata: ${JSON.stringify(event)}\\n\\n`));
+        response.write(`event: ready\ndata: ${JSON.stringify({ service: 'agentcorps-gateway' })}\n\n`);
+        const unsubscribe = runtime.store.subscribe((event) => response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
         request.on('close', unsubscribe);
         return;
       }

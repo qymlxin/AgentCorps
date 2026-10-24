@@ -29,7 +29,29 @@ describe('gateway', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
-  it('bridges signed channel webhooks into shared sessions and tasks', async () => {
+  it('streams valid SSE framing for ready and task events', async () => {
+    const server = await listenGateway(new TaskRuntime(), 0);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const stream = await fetch(`${base}/events`);
+    const reader = stream.body?.getReader();
+    if (!reader) throw new Error('Expected SSE response body');
+    const decoder = new TextDecoder();
+    try {
+      const ready = await reader.read();
+      expect(decoder.decode(ready.value)).toContain('event: ready\ndata:');
+      const created = await fetch(`${base}/tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'SSE task', objective: 'stream this event' }) });
+      expect(created.status).toBe(201);
+      const event = await reader.read();
+      const text = decoder.decode(event.value);
+      expect(text).toContain('event: task.created\ndata:');
+      expect(text).toContain('stream this event');
+    } finally {
+      await reader.cancel();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });  it('bridges signed channel webhooks into shared sessions and tasks', async () => {
     const secret = 'channel-secret';
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { channels: { webhookSecrets: { feishu: secret } } });
     const address = server.address();
