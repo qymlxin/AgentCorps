@@ -24,6 +24,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - [Agent 适配器](docs/07-agent-adapters.md)
 - [全局记忆](docs/08-memory.md)
 - [多 Agent 协同与委派](docs/09-orchestration.md)
+- [MCP 客户端](docs/10-mcp.md)
 - [决策记录](docs/decisions/)
 - [系统架构图（SVG）](docs/diagrams/system-architecture.svg)
 
@@ -34,7 +35,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - `packages/domain`：与平台无关的领域对象和事件类型
 - `packages/runtime`：本地编排运行时、事件存储、任务状态机和策略执行
 - `packages/adapters`：Codex、Claude Code、Cursor、MCP、插件和聊天渠道适配器
-- `packages/memory`：全局记忆索引、检索、生命周期和隐私分区
+- `packages/mcp`：MCP 工具发现、调用和外部服务适配
 - `packages/memory`：全局记忆索引、检索、生命周期和隐私分区
 - `apps/cli`：终端控制面
 - `apps/desktop`：桌面控制面（后续使用 Tauri）
