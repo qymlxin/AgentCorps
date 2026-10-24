@@ -147,6 +147,38 @@ export class TaskRuntime {
     return task;
   }
 
+  delegateTask(parentTaskId: TaskId, input: Omit<CreateTaskInput, 'parentTaskId'>): Task {
+    if (!this.tasks.has(parentTaskId)) throw new Error(`Parent task not found: ${parentTaskId}`);
+    return this.createTask({ ...input, parentTaskId });
+  }
+
+  getChildren(parentTaskId: TaskId): readonly Task[] {
+    return this.listTasks().filter((task) => task.parentTaskId === parentTaskId);
+  }
+
+  async runDelegatedTasks(
+    parentTaskId: TaskId,
+    assignments: readonly { input: Omit<CreateTaskInput, 'parentTaskId'>; agent: AgentAdapter }[],
+    maxConcurrent = 2,
+  ): Promise<readonly Task[]> {
+    if (!this.tasks.has(parentTaskId)) throw new Error(`Parent task not found: ${parentTaskId}`);
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new Error('maxConcurrent must be a positive integer');
+    const children = assignments.map(({ input }) => this.delegateTask(parentTaskId, input));
+    let next = 0;
+    const results: Task[] = new Array(children.length);
+    const worker = async (): Promise<void> => {
+      while (next < children.length) {
+        const index = next++;
+        const assignment = assignments[index];
+        const child = children[index];
+        if (!assignment || !child) continue;
+        results[index] = await this.runTask(child.id, assignment.agent);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(maxConcurrent, children.length) }, () => worker()));
+    return results;
+  }
+
   getTask(taskId: TaskId): Task | undefined {
     return this.tasks.get(taskId);
   }

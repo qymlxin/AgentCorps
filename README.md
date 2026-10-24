@@ -23,6 +23,7 @@ AgentCorps 是一个运行在个人电脑上的本地优先（local-first）多 
 - [本地控制面 API](docs/06-local-api.md)
 - [Agent 适配器](docs/07-agent-adapters.md)
 - [全局记忆](docs/08-memory.md)
+- [多 Agent 协同与委派](docs/09-orchestration.md)
 - [决策记录](docs/decisions/)
 - [系统架构图（SVG）](docs/diagrams/system-architecture.svg)
 
