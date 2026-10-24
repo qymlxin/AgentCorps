@@ -111,3 +111,93 @@ export function createDefaultProfile(workspaceRoot: string, level: SandboxLevel 
     allowProcessExec: level === 'S2' || level === 'S3' || level === 'S4',
   };
 }
+
+export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'consumed';
+
+export interface Approval {
+  readonly id: string;
+  readonly request: ToolRequest;
+  readonly reason: string;
+  readonly status: ApprovalStatus;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly decidedAt?: string;
+  readonly decidedBy?: string;
+  readonly decisionReason?: string;
+}
+
+export interface ApprovalStore {
+  save(approval: Approval): void;
+  get(id: string): Approval | undefined;
+  list(): readonly Approval[];
+}
+
+export class InMemoryApprovalStore implements ApprovalStore {
+  private readonly approvals = new Map<string, Approval>();
+  save(approval: Approval): void { this.approvals.set(approval.id, approval); }
+  get(id: string): Approval | undefined { return this.approvals.get(id); }
+  list(): readonly Approval[] { return [...this.approvals.values()]; }
+}
+
+export class ApprovalService {
+  constructor(
+    private readonly store: ApprovalStore,
+    private readonly now: () => string = () => new Date().toISOString(),
+    private readonly id: () => string = () => `approval-${crypto.randomUUID()}`,
+  ) {}
+
+  create(request: ToolRequest, policy: PolicyResult, ttlMs = 5 * 60 * 1000): Approval {
+    if (policy.decision !== 'approval_required') throw new Error('Only approval_required policy results can create approvals');
+    if (!Number.isInteger(ttlMs) || ttlMs <= 0) throw new Error('Approval TTL must be a positive integer');
+    const createdAt = this.now();
+    const expiresAt = new Date(Date.parse(createdAt) + ttlMs).toISOString();
+    const approval: Approval = { id: this.id(), request, reason: policy.reason, status: 'pending', createdAt, expiresAt };
+    this.store.save(approval);
+    return approval;
+  }
+
+  get(id: string): Approval | undefined {
+    const approval = this.store.get(id);
+    return approval ? this.expireIfNeeded(approval) : undefined;
+  }
+
+  list(): readonly Approval[] {
+    return this.store.list().map((approval) => this.expireIfNeeded(approval));
+  }
+
+  approve(id: string, decidedBy: string, decisionReason?: string): Approval {
+    return this.decide(id, 'approved', decidedBy, decisionReason);
+  }
+
+  deny(id: string, decidedBy: string, decisionReason?: string): Approval {
+    return this.decide(id, 'denied', decidedBy, decisionReason);
+  }
+
+  consume(id: string): Approval | undefined {
+    const current = this.get(id);
+    if (!current || current.status !== 'approved') return undefined;
+    const consumed = { ...current, status: 'consumed' as const, decidedAt: current.decidedAt ?? this.now() };
+    this.store.save(consumed);
+    return consumed;
+  }
+
+  private decide(id: string, status: 'approved' | 'denied', decidedBy: string, decisionReason?: string): Approval {
+    if (!decidedBy.trim()) throw new Error('Approval decision requires decidedBy');
+    const current = this.get(id);
+    if (!current) throw new Error(`Approval not found: ${id}`);
+    if (current.status !== 'pending') throw new Error(`Approval is not pending: ${current.status}`);
+    const decidedAt = this.now();
+    const decided = { ...current, status, decidedAt, decidedBy: decidedBy.trim(), ...(decisionReason?.trim() ? { decisionReason: decisionReason.trim() } : {}) };
+    this.store.save(decided);
+    return decided;
+  }
+
+  private expireIfNeeded(approval: Approval): Approval {
+    if ((approval.status === 'pending' || approval.status === 'approved') && Date.parse(approval.expiresAt) <= Date.parse(this.now())) {
+      const expired = { ...approval, status: 'expired' as const, decidedAt: approval.decidedAt ?? this.now(), decisionReason: 'Approval expired' };
+      this.store.save(expired);
+      return expired;
+    }
+    return approval;
+  }
+}
