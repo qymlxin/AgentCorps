@@ -65,6 +65,22 @@ describe('CLI', () => {
     }
   });
 
+  it('binds, lists, and revokes external channel identities', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-identity-'));
+    try {
+      const provisioned = JSON.parse((await execFileAsync('node', ['dist/index.js', 'device', 'provision', '--label', 'channel-device', '--data-dir', directory])).stdout) as { device: { id: string } };
+      const deviceId = provisioned.device.id;
+      const binding = JSON.parse((await execFileAsync('node', ['dist/index.js', 'identity', 'bind', '--channel', 'feishu', '--external-user-id', 'external-user', '--device-id', deviceId, '--role', 'operator', '--data-dir', directory])).stdout) as { deviceId: string; roles: string[] };
+      expect(binding).toMatchObject({ deviceId, roles: ['operator'] });
+      const listed = JSON.parse((await execFileAsync('node', ['dist/index.js', 'identity', 'list', '--data-dir', directory])).stdout) as Array<{ externalUserId: string }>;
+      expect(listed.map((item) => item.externalUserId)).toContain('external-user');
+      await execFileAsync('node', ['dist/index.js', 'identity', 'revoke', '--channel', 'feishu', '--external-user-id', 'external-user', '--data-dir', directory]);
+      expect(JSON.parse((await execFileAsync('node', ['dist/index.js', 'identity', 'list', '--data-dir', directory])).stdout)).toEqual([]);
+      expect(JSON.parse((await execFileAsync('node', ['dist/index.js', 'identity', 'list', '--include-revoked', '--data-dir', directory])).stdout)).toHaveLength(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it('shares persistent tasks between CLI invocations', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-'));
     try {

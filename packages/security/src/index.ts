@@ -165,6 +165,10 @@ export function createDefaultProfile(workspaceRoot: string, level: SandboxLevel 
 }
 
 export * from './sandbox.js';
+export * from './identity.js';
+export * from './risk.js';
+export * from './supply-chain.js';
+export * from './external-identity.js';
 
 
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'consumed';
@@ -185,11 +189,19 @@ export interface ApprovalStore {
   save(approval: Approval): void;
   get(id: string): Approval | undefined;
   list(): readonly Approval[];
+  /** Atomically persists a state transition when the current status still matches. */
+  updateIfStatus?(id: string, expected: ApprovalStatus, next: Approval): boolean;
 }
 
 export class InMemoryApprovalStore implements ApprovalStore {
   private readonly approvals = new Map<string, Approval>();
   save(approval: Approval): void { this.approvals.set(approval.id, approval); }
+  updateIfStatus(id: string, expected: ApprovalStatus, next: Approval): boolean {
+    const current = this.approvals.get(id);
+    if (!current || current.status !== expected) return false;
+    this.approvals.set(id, next);
+    return true;
+  }
   get(id: string): Approval | undefined { return this.approvals.get(id); }
   list(): readonly Approval[] { return [...this.approvals.values()]; }
 }
@@ -227,6 +239,13 @@ export class SqliteApprovalStore implements ApprovalStore {
       approval.id, JSON.stringify(approval.request), approval.reason, approval.status, approval.createdAt, approval.expiresAt,
       approval.decidedAt ?? null, approval.decidedBy ?? null, approval.decisionReason ?? null,
     );
+  }
+
+  updateIfStatus(id: string, expected: ApprovalStatus, next: Approval): boolean {
+    const result = this.db.prepare(`UPDATE approvals SET request_json = ?, reason = ?, status = ?, created_at = ?, expires_at = ?, decided_at = ?, decided_by = ?, decision_reason = ? WHERE id = ? AND status = ?`).run(
+      JSON.stringify(next.request), next.reason, next.status, next.createdAt, next.expiresAt, next.decidedAt ?? null, next.decidedBy ?? null, next.decisionReason ?? null, id, expected,
+    ) as { changes?: number };
+    return Number(result?.changes ?? 0) === 1;
   }
 
   get(id: string): Approval | undefined {
@@ -288,8 +307,11 @@ export class ApprovalService {
     const current = this.get(id);
     if (!current || current.status !== 'approved') return undefined;
     const consumed = { ...current, status: 'consumed' as const, decidedAt: current.decidedAt ?? this.now() };
-    this.store.save(consumed);
-    return consumed;
+    if (!this.store.updateIfStatus?.(id, 'approved', consumed)) {
+      if (this.store.updateIfStatus) return undefined;
+      this.store.save(consumed);
+    }
+    return this.store.get(id) ?? consumed;
   }
 
   private decide(id: string, status: 'approved' | 'denied', decidedBy: string, decisionReason?: string): Approval {
@@ -299,15 +321,25 @@ export class ApprovalService {
     if (current.status !== 'pending') throw new Error(`Approval is not pending: ${current.status}`);
     const decidedAt = this.now();
     const decided = { ...current, status, decidedAt, decidedBy: decidedBy.trim(), ...(decisionReason?.trim() ? { decisionReason: decisionReason.trim() } : {}) };
-    this.store.save(decided);
-    return decided;
+    if (!this.store.updateIfStatus?.(id, 'pending', decided)) {
+      if (this.store.updateIfStatus) {
+        const latest = this.get(id);
+        if (latest && latest.status !== 'pending') throw new Error(`Approval is not pending: ${latest.status}`);
+        throw new Error(`Approval transition failed: ${id}`);
+      }
+      this.store.save(decided);
+    }
+    return this.store.get(id) ?? decided;
   }
 
   private expireIfNeeded(approval: Approval): Approval {
     if ((approval.status === 'pending' || approval.status === 'approved') && Date.parse(approval.expiresAt) <= Date.parse(this.now())) {
       const expired = { ...approval, status: 'expired' as const, decidedAt: approval.decidedAt ?? this.now(), decisionReason: 'Approval expired' };
-      this.store.save(expired);
-      return expired;
+      if (!this.store.updateIfStatus?.(approval.id, approval.status, expired)) {
+        if (this.store.updateIfStatus) return this.store.get(approval.id) ?? approval;
+        this.store.save(expired);
+      }
+      return this.store.get(approval.id) ?? expired;
     }
     return approval;
   }

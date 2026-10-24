@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
-import { ApprovalService, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
+import { ApprovalService, ExternalIdentityResolver, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
 import { MockAgent, type AgentAdapter, type TaskRuntime } from '@agentcorps/runtime';
 import {
@@ -16,6 +16,7 @@ import {
   verifyFeishuEventSignature,
   verifyWecomCallbackSignature,
   verifyHmacSha256,
+  formatWecomPassiveReply,
   type ChannelAdapter,
   type ChannelConnector,
   type ChannelKind,
@@ -113,6 +114,8 @@ export interface ChannelGatewayOptions {
   readonly workspaceId?: string;
   readonly sessionIds?: Map<string, string>;
   readonly stateStore?: ChannelStateStore;
+  /** When configured, every inbound external user must be explicitly mapped to a local device. */
+  readonly identityResolver?: ExternalIdentityResolver;
 }
 
 export interface MemoryGatewayOptions {
@@ -129,6 +132,7 @@ export interface SecurityGatewayOptions {
 
 export interface GatewayOptions {
   readonly bearerToken?: string;
+  readonly tokenVerifier?: (token: string) => boolean | Promise<boolean>;
   readonly corsOrigin?: string;
   readonly channels?: ChannelGatewayOptions;
   readonly memory?: MemoryGatewayOptions;
@@ -168,9 +172,13 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function isAuthorized(request: IncomingMessage, options: GatewayOptions): boolean {
-  if (!options.bearerToken) return true;
-  return request.headers.authorization === `Bearer ${options.bearerToken}`;
+async function isAuthorized(request: IncomingMessage, options: GatewayOptions): Promise<boolean> {
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith('Bearer ')) return !options.bearerToken && !options.tokenVerifier;
+  const token = authorization.slice('Bearer '.length);
+  if (options.bearerToken && token === options.bearerToken) return true;
+  if (!options.tokenVerifier) return false;
+  try { return await options.tokenVerifier(token); } catch { return false; }
 }
 
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
@@ -187,7 +195,7 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
       response.end();
       return;
     }
-    if (!isAuthorized(request, options) && request.url !== '/health') {
+    if (!await isAuthorized(request, options) && request.url !== '/health') {
       sendJson(response, 401, { error: 'Bearer token required' });
       return;
     }
@@ -209,6 +217,8 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
         const adapter = adapters[kind];
         const rawBody = await readBody(request);
         const rawText = rawBody.toString('utf8');
+        const wecomTimestamp = url.searchParams.get('timestamp');
+        const wecomNonce = url.searchParams.get('nonce');
         const secret = options.channels?.webhookSecrets?.[kind];
         if (secret && channelPath[2] === 'webhook') {
           const larkSignature = headerValue(request.headers['x-lark-signature']);
@@ -217,8 +227,6 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           const dingTimestamp = url.searchParams.get('timestamp');
           const dingSignature = url.searchParams.get('sign');
           const wecomSignature = url.searchParams.get('msg_signature');
-          const wecomTimestamp = url.searchParams.get('timestamp');
-          const wecomNonce = url.searchParams.get('nonce');
           const wecomEncrypted = kind === 'wecom' ? parseWecomXmlEnvelope(rawText).encrypt : undefined;
           const signatureHeader = headerValue(request.headers['x-agentcorps-signature'] ?? request.headers['x-signature']);
           const valid = kind === 'feishu' && larkSignature && larkTimestamp && larkNonce
@@ -255,6 +263,8 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           return sendJson(response, 200, { channel: kind, payload });
         }
         const inbound = adapter.parseInbound(body);
+        const identity = options.channels?.identityResolver?.resolve(inbound.channel, inbound.externalUserId);
+        if (options.channels?.identityResolver && !identity) return sendJson(response, 403, { error: 'External user is not mapped to a local device', channel: inbound.channel, externalUserId: inbound.externalUserId });
         if (!stateStore.claimInbound(inbound.channel, inbound.externalMessageId)) return sendJson(response, 200, { accepted: false, duplicate: true, externalMessageId: inbound.externalMessageId });
         const key = channelSessionKey(inbound);
         let session = sessions.get(stateStore.getSessionId(key) ?? sessionIds.get(key) ?? '');
@@ -275,7 +285,13 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           objective: inbound.text,
           mode: session.mode,
         });
-        return sendJson(response, 202, { accepted: true, channel: kind, externalMessageId: inbound.externalMessageId, session, message, task });
+        if (kind === 'wecom' && options.channels?.webhookEncryptionKeys?.[kind] && secret) {
+          const reply = formatWecomPassiveReply({ toUserName: inbound.externalUserId, fromUserName: String(body.ToUserName ?? body.toUserName ?? 'agentcorps'), content: '已收到，任务已进入处理队列。' }, options.channels.webhookEncryptionKeys[kind]!, secret, wecomNonce ?? 'agentcorps', wecomTimestamp ?? String(Math.floor(Date.now() / 1000)));
+          response.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'content-length': Buffer.byteLength(reply) });
+          response.end(reply);
+          return;
+        }
+        return sendJson(response, 202, { accepted: true, channel: kind, externalMessageId: inbound.externalMessageId, ...(identity ? { identity: { deviceId: identity.deviceId, roles: identity.roles } } : {}), session, message, task });
       }
       const approval = approvalRoute(pathname);
       if (approval) {

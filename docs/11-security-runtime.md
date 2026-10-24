@@ -20,17 +20,12 @@
 
 ## 执行与凭据
 
-`packages/security` 提供 `SandboxedCommandRunner` 和 `SecureCommandExecutor`：前者负责 macOS/容器命令隔离、输出上限、超时和凭据脱敏，后者先执行 `PolicyEngine` 决策，再要求并消费匹配的一次性审批，最后才启动沙箱进程。调用方仍必须明确提供工作区、镜像和凭据白名单。
+`packages/security` 提供 `SandboxedCommandRunner` 和 `SecureCommandExecutor`：前者负责 macOS/容器命令隔离、网络限制、输出上限、超时、取消、CPU/内存/PID 配额和凭据脱敏，后者先执行 `PolicyEngine` 决策，再要求并消费匹配的一次性审批，最后才启动沙箱进程。调用方仍必须明确提供工作区、镜像和凭据白名单。
 
-人工审批实体支持过期、批准、拒绝、一次性消费以及 SQLite 持久化；审批必须绑定完整工具请求，不能用宽泛批准覆盖不同参数。
+人工审批实体支持过期、批准、拒绝、一次性消费以及 SQLite 持久化；CLI 的 Gateway 运行路径使用 SQLite 审批和审计存储。MCP 工具和 Agent 适配器已经通过统一审批边界接入任务运行时，待审批任务会进入 `waiting_approval`。
 
 ## 当前边界
 
-策略、沙箱命令生成和凭据脱敏已经具备可测试实现，但当前 Gateway 和 Agent 适配器尚未自动把每个外部工具调用切换到 `SandboxedCommandRunner`。macOS profile 的网络能力只有 none/full 两档，容器后端依赖宿主 Docker，生产环境仍需要对 workspace 挂载、镜像来源、进程资源配额和凭据生命周期做部署级验证。
+策略、审批、沙箱命令生成、MCP 工具执行、任务等待审批状态、命令风险分类、供应链摘要/签名校验、外部身份绑定和凭据脱敏已经具备可测试实现。审批 SQLite 状态转换使用条件更新，多个进程不会重复消费同一批准。真实 Docker/macOS sandbox 由 CI 条件测试执行，宿主 Docker、平台权限和镜像缓存仍属于部署环境条件。
 
-后续仍需要：
-
-- 将实际工具执行器统一接入策略、审批、沙箱和审计事件
-- 命令解析与风险分类，不依赖字符串黑名单
-- 插件/MCP/Agent 来源签名和供应链扫描
-- macOS/container 的真实安装环境、资源限制和故障注入测试
+仍需部署级验证的内容包括真实镜像仓库签名根、凭据生命周期、平台沙箱权限和 Agent 厂商进程行为；命令风险分类、插件/MCP/Agent 来源签名和依赖规格扫描已经接入代码与发布审计。

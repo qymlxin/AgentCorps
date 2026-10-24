@@ -1,7 +1,6 @@
 # Agent 协议边界与适配策略
 
-> 版本：0.1.0  
-> 状态：A2A 实验性客户端和 ACP 实验性 stdio 客户端已实现并通过本地 fixture 验证；A2A 现在有 Agent Card 基础校验、可取消请求、幂等键和结构化协议错误；MCP 已采用。真实流式取消、断线恢复、完整能力协商和厂商兼容矩阵仍未完成。
+> 状态：A2A/ACP 实验性客户端已实现并通过本地 fixture 验证；A2A 支持 Agent Card 能力和协议版本要求、可取消请求、幂等键、SSE 流式事件、`Last-Event-ID` 断线重连、重复事件去重和可配置远程信任策略；ACP 支持 prompt abort 时发送 `session/cancel` 以及初始化版本/能力要求；MCP 已采用并支持工具、资源、提示词、分页、通知、取消和审批执行。真实厂商兼容矩阵和远程租户联调仍需集成环境验证。
 > 更新日期：2026-10-24
 
 本文记录 AgentCorps 对 MCP、A2A、ACP 及相关传输机制的职责划分。协议适配器只负责外部协议的发现、编码、解码和错误映射；任务、会话、记忆、能力、审批、沙箱和审计仍由 AgentCorps 内部领域模型负责。
@@ -15,7 +14,7 @@
 | ACP（Agent Client Protocol） | 编辑器/客户端 → coding Agent | 实验性 | stdio JSON-RPC 初始化、session/new、session/prompt、session/update、session/cancel 和请求回调 | 不把 ACP 会话当作内部任务或记忆的唯一模型 |
 | JSON-RPC | 请求/响应消息格式 | 已局部采用 | 编码请求、关联 request id、解码错误 | 不定义 Agent 能力和生命周期 |
 | stdio/JSONL | 本地进程传输 | 已采用 | 启动、读写、超时、取消和退出处理 | 不授予子进程额外文件、命令或网络权限 |
-| SSE、WebSocket | 流式控制面传输 | 适配预留 | 后续提供增量事件和远程控制 | 不替代事件存储与权限校验 |
+| SSE、WebSocket | 流式控制面传输 | SSE 已用于 Gateway `/events` 和 A2A `message/stream`；WebSocket 仍预留 | SSE 事件回放、认证和权限校验由控制面负责；WebSocket 尚未作为控制面传输开放 |
 | Webhook | 聊天渠道入站传输 | 基础适配器已实现 | 签名校验、去重、身份映射和消息转换 | 不直接创建越权任务或改变策略 |
 
 ## 2. A2A 当前实现
@@ -34,20 +33,11 @@
 6. 将 HTTP 错误、JSON-RPC error 和超时转换为可观测的客户端错误。
 7. 返回远端任务的 id、状态、artifacts 和 history 字段（未知字段保持在协议边界外）。
 
-本地测试 fixture 已验证 Agent Card 发现和 `message/send` 请求/响应闭环。测试同时断言 A2A 的成熟度仍为 `experimental`，避免调用方误以为这是稳定兼容承诺。
+本地测试 fixture 已验证 Agent Card 发现、能力要求、`message/send`、SSE 流式重连和任务取消。测试同时断言 A2A 的成熟度仍为 `experimental`，避免调用方误以为这是稳定兼容承诺。
 
-### 2.2 有意保持的限制
+### 2.2 真实环境边界
 
-当前实现只覆盖最小同步请求路径，以下能力尚未声明支持：
-
-- 流式任务状态和订阅
-- 推送通知、长轮询和断线恢复
-- 多租户远端身份、签名凭据轮换和信任列表
-- 远程任务取消、幂等键和重试策略
-- Agent Card 的完整 schema 校验与版本协商
-- 远程 artifacts 的下载隔离、大小限制和内容扫描
-
-这些能力必须先映射到 AgentCorps 的任务状态、权限策略、事件日志和沙箱，再扩展 A2A 适配器。不能因为远端协议提供了字段，就直接把字段当作内部可信状态。
+本地 fixture 已验证上述客户端行为。推送通知、长轮询、厂商特定断线语义、多租户远端身份、签名凭据轮换、完整 Agent Card schema、远程 artifact 隔离下载和内容扫描仍需要集成环境验证；这些不属于当前本地 fixture 的兼容承诺。
 
 ## 3. MCP 与 A2A 的分工
 
@@ -72,7 +62,7 @@ MCP 与 A2A 不做统一抽象：
 5. 提供 `session/cancel` 通知和可选的 Agent 请求回调，用于后续接入权限请求。
 6. 处理请求超时、JSON-RPC 错误、进程退出和关闭时的 pending 请求。
 
-本地 fixture 已验证初始化、会话创建、prompt 响应和增量 update。该适配器仍标记为 `experimental`，因为文件系统代理、终端代理、权限请求持久化、版本/能力完整协商和 coding-agent 结果映射尚未接入 AgentCorps 的安全与任务层。
+本地 fixture 已验证初始化、会话创建、prompt 响应、增量 update，以及调用方声明的协议版本和能力要求。该适配器仍标记为 `experimental`，因为文件系统代理、终端代理、权限请求持久化和 coding-agent 结果映射尚未接入 AgentCorps 的安全与任务层。
 
 ## 5. ACP 适配边界
 

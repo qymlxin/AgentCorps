@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, probeAgent, type AgentProbeOptions } from '@agentcorps/adapters';
 import type { AgentAdapter } from '@agentcorps/runtime';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
+import { SqliteChannelStateStore } from '@agentcorps/channels';
 import { JsonlMemoryStore, migrateMemoryStore, MemoryService, SqliteMemoryStore } from '@agentcorps/memory';
+import { DeviceTokenVerifier, ExternalIdentityResolver, SignedAccessTokenService, SqliteApprovalStore, SqliteAuditLog, PolicyEngine, ApprovalService, createDefaultProfile, SqliteDeviceIdentityStore, SqliteExternalIdentityBindingStore, type ChannelKind, type DeviceIdentity, type ExternalIdentityRole } from '@agentcorps/security';
 import { JsonlSessionStore, migrateSessionStore, SessionService, SqliteSessionStore } from '@agentcorps/session';
 import { MockAgent, SqliteEventStore, TaskRuntime } from '@agentcorps/runtime';
 
@@ -21,7 +24,8 @@ Commands:
   task list [--data-dir PATH]               List persistent tasks
   task show TASK_ID [--data-dir PATH]       Show a task and its events
   task run TASK_ID [--agent mock|codex|claude-code|cursor|command] [--data-dir PATH]
-       [--agent-command PATH] [--agent-arg ARG]
+       [--agent-command PATH] [--agent-arg ARG] [--sandbox-backend macos|container]
+       [--container-image IMAGE] [--sandbox-network full] [--sandbox-memory-mb N] [--sandbox-cpu N] [--sandbox-pids N]
   task cancel TASK_ID [--data-dir PATH]    Cancel a task
   task retry TASK_ID [--data-dir PATH]     Requeue a failed or cancelled task
   task probe [--agent codex|claude-code|cursor] [--command PATH]    Probe an Agent executable
@@ -33,7 +37,15 @@ Commands:
   memory delete MEMORY_ID                 Soft-delete a memory
   data migrate [--data-dir PATH]          Migrate legacy JSONL sessions and memory
   data backup --output PATH                Copy the SQLite database to a backup file
-  data restore --input PATH                Replace the SQLite database from a backup file`);
+  data restore --input PATH                Replace the SQLite database from a backup file
+  device provision --label LABEL           Create a local device identity and print its token
+  device list                              List local device identities
+  device token DEVICE_ID [--ttl SECONDS]   Issue a new token for a device
+  device revoke DEVICE_ID                  Revoke a local device identity
+  identity bind --channel KIND --external-user-id ID --device-id DEVICE [--role user|operator|admin]
+  identity list [--include-revoked]         List channel-to-device identity bindings
+  identity revoke --channel KIND --external-user-id ID
+  serve --identity-required                 Require external channel identity bindings`);
   process.exit(1);
 }
 
@@ -72,7 +84,19 @@ function agentForRun(): AgentAdapter {
   if (selected === 'cursor') return args.length ? createCursorAdapter(command ?? 'agent', args) : createCursorAdapter(command ?? 'agent');
   if (selected === 'command') {
     if (!command) throw new Error('--agent-command is required for --agent command');
-    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, args, outputFormat: 'text', promptPlacement: 'argument' });
+    const sandboxBackend = flag('--sandbox-backend');
+    if (sandboxBackend && sandboxBackend !== 'macos' && sandboxBackend !== 'container') throw new Error('--sandbox-backend must be macos or container');
+    if (sandboxBackend === 'container' && !flag('--container-image')) throw new Error('--container-image is required for container sandboxing');
+    const sandbox = sandboxBackend ? {
+      backend: sandboxBackend as 'macos' | 'container',
+      workspaceRoot: process.cwd(),
+      network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
+      ...(flag('--container-image') ? { containerImage: flag('--container-image')! } : {}),
+      maxMemoryMb: Number(flag('--sandbox-memory-mb') ?? '1024'),
+      maxCpu: Number(flag('--sandbox-cpu') ?? '2'),
+      maxPids: Number(flag('--sandbox-pids') ?? '128'),
+    } : undefined;
+    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, args, outputFormat: 'text', promptPlacement: 'argument', ...(sandbox ? { sandbox } : {}) });
   }
   throw new Error(`Unknown agent: ${selected}`);
 }
@@ -89,6 +113,60 @@ function agentProbeOptions(): AgentProbeOptions {
 
 function dataDirectory(): string {
   return flag('--data-dir') ?? join(homedir(), '.agentcorps');
+}
+
+function deviceDatabasePath(dataDir = dataDirectory()): string {
+  return join(dataDir, 'agentcorps.db');
+}
+
+function accessTokenSecret(dataDir = dataDirectory()): string {
+  const configured = process.env.AGENTCORPS_TOKEN_SECRET?.trim();
+  if (configured) return configured;
+  const path = join(dataDir, 'device-token.secret');
+  mkdirSync(dataDir, { recursive: true });
+  if (existsSync(path)) {
+    const secret = readFileSync(path, 'utf8').trim();
+    if (secret.length >= 32) return secret;
+    throw new Error(`Device token secret is too short: ${path}`);
+  }
+  const secret = randomBytes(32).toString('base64url');
+  writeFileSync(path, `${secret}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return secret;
+}
+
+function deviceAuth(dataDir = dataDirectory()): { store: SqliteDeviceIdentityStore; tokens: SignedAccessTokenService; verifier: DeviceTokenVerifier } {
+  const store = new SqliteDeviceIdentityStore(deviceDatabasePath(dataDir));
+  const tokens = new SignedAccessTokenService(accessTokenSecret(dataDir));
+  return { store, tokens, verifier: new DeviceTokenVerifier(tokens, store) };
+}
+
+function channelKind(value: string | undefined): ChannelKind {
+  if (value === 'feishu' || value === 'dingtalk' || value === 'wecom' || value === 'custom') return value;
+  throw new Error('--channel must be feishu, dingtalk, wecom, or custom');
+}
+
+function identityRoles(): ExternalIdentityRole[] {
+  const roles = repeatedFlag('--role');
+  const values = roles.length ? roles : ['user'];
+  if (values.some((role) => role !== 'user' && role !== 'operator' && role !== 'admin')) throw new Error('--role must be user, operator, or admin');
+  return [...new Set(values)] as ExternalIdentityRole[];
+}
+
+function identityStore(dataDir = dataDirectory()): SqliteExternalIdentityBindingStore {
+  return new SqliteExternalIdentityBindingStore(deviceDatabasePath(dataDir));
+}
+function provisionDevice(label: string, dataDir = dataDirectory()): DeviceIdentity {
+  if (!label.trim()) throw new Error('--label is required');
+  const { store, tokens } = deviceAuth(dataDir);
+  try {
+    const device: DeviceIdentity = { id: `device-${randomBytes(12).toString('hex')}`, label: label.trim(), createdAt: new Date().toISOString() };
+    store.save(device);
+    console.log(JSON.stringify({ device, token: tokens.issue(device) }, null, 2));
+    return device;
+  } finally {
+    store.close();
+  }
 }
 
 function runtime(memory = memoryService()): TaskRuntime {
@@ -110,6 +188,76 @@ async function main(): Promise<void> {
     await local.runTask(created.id, new MockAgent());
     unsubscribe();
     return;
+  }
+
+  if (command === 'device') {
+    const action = process.argv[3];
+    const dataDir = dataDirectory();
+    if (action === 'provision') {
+      provisionDevice(requiredFlag('--label'), dataDir);
+      return;
+    }
+    const { store, tokens } = deviceAuth(dataDir);
+    try {
+      if (action === 'list') {
+        console.log(JSON.stringify(store.list(), null, 2));
+        return;
+      }
+      if (action === 'revoke') {
+        const id = process.argv[4] ?? flag('--device-id');
+        if (!id) usage();
+        const device = store.get(id);
+        if (!device) throw new Error(`Device not found: ${id}`);
+        const revoked = { ...device, revokedAt: new Date().toISOString() };
+        store.save(revoked);
+        console.log(JSON.stringify(revoked, null, 2));
+        return;
+      }
+      if (action === 'token') {
+        const id = process.argv[4] ?? flag('--device-id');
+        if (!id) usage();
+        const device = store.get(id);
+        if (!device) throw new Error(`Device not found: ${id}`);
+        console.log(tokens.issue(device, Number(flag('--ttl') ?? '3600')));
+        return;
+      }
+    } finally {
+      store.close();
+    }
+    usage();
+  }
+
+  if (command === 'identity') {
+    const action = process.argv[3];
+    const dataDir = dataDirectory();
+    const bindings = identityStore(dataDir);
+    const devices = new SqliteDeviceIdentityStore(deviceDatabasePath(dataDir));
+    const resolver = new ExternalIdentityResolver(bindings);
+    try {
+      if (action === 'bind') {
+        const deviceId = requiredFlag('--device-id');
+        const device = devices.get(deviceId);
+        if (!device) throw new Error(`Device not found: ${deviceId}`);
+        if (device.revokedAt) throw new Error(`Cannot bind a revoked device: ${deviceId}`);
+        const binding = resolver.bind(channelKind(requiredFlag('--channel')), requiredFlag('--external-user-id'), deviceId, identityRoles());
+        console.log(JSON.stringify(binding, null, 2));
+        return;
+      }
+      if (action === 'list') {
+        const includeRevoked = process.argv.includes('--include-revoked');
+        console.log(JSON.stringify(resolver.list().filter((binding) => includeRevoked || !binding.revokedAt), null, 2));
+        return;
+      }
+      if (action === 'revoke') {
+        const binding = resolver.revoke(channelKind(requiredFlag('--channel')), requiredFlag('--external-user-id'));
+        console.log(JSON.stringify(binding, null, 2));
+        return;
+      }
+    } finally {
+      devices.close();
+      bindings.close();
+    }
+    usage();
   }
 
   if (command === 'data') {
@@ -159,9 +307,23 @@ async function main(): Promise<void> {
     const token = flag('--token');
     if (host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('Remote gateway binding requires --token');
     const dataDir = dataDirectory();
-    const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? '*' : undefined);
+    const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? undefined : undefined);
     const memories = memoryService();
-    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}), memory: { service: memories }, agentFactory: () => agentForRun() };
+    const deviceServices = token ? undefined : deviceAuth(dataDir);
+    const identityRequired = process.argv.includes('--identity-required');
+    const bindings = identityRequired ? identityStore(dataDir) : undefined;
+    const identityResolver = bindings ? new ExternalIdentityResolver(bindings) : undefined;
+    const channelState = new SqliteChannelStateStore(deviceDatabasePath(dataDir));
+    const audit = new SqliteAuditLog(deviceDatabasePath(dataDir));
+    const approvalStore = new SqliteApprovalStore(deviceDatabasePath(dataDir));
+    const gatewayOptions = {
+      ...(token ? { bearerToken: token } : { tokenVerifier: async (candidate: string) => Boolean(deviceServices?.verifier.verify(candidate)) }),
+      ...(corsOrigin ? { corsOrigin } : {}),
+      channels: { stateStore: channelState, ...(identityResolver ? { identityResolver } : {}) },
+      memory: { service: memories },
+      security: { context: { mode: 'code' as const, profile: createDefaultProfile(process.cwd(), 'S2') }, engine: new PolicyEngine(audit), approvals: new ApprovalService(approvalStore), allowApprovalDecisions: true },
+      agentFactory: () => agentForRun(),
+    };
     const server = await listenGateway(runtime(memories), port, host, new SessionService(new SqliteSessionStore(join(dataDir, 'agentcorps.db'))), gatewayOptions);
     console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);
     return;

@@ -26,6 +26,21 @@ describe('McpStdioClient', () => {
     }
   });
 
+  it('supports paginated resources and prompts and forwards server notifications', async () => {
+    const notifications: string[] = [];
+    const script = `process.stdin.on('data', chunk => { for (const line of chunk.toString().split('\\n')) { if (!line) continue; const req=JSON.parse(line); if(req.id && req.method==='initialize'){ console.log(JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info'}})); console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{protocolVersion:'2026-07-28',capabilities:{resources:{},prompts:{}},serverInfo:{name:'fixture',version:'1'}}})); } if(req.id && req.method==='resources/list') console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:req.params.cursor?{resources:[{uri:'file://two'}]}:{resources:[{uri:'file://one'}],nextCursor:'page-2'}})); if(req.id && req.method==='resources/read') console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{contents:[{uri:req.params.uri,text:'content'}]}})); if(req.id && req.method==='prompts/list') console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{prompts:[{name:'summarize'}]}})); if(req.id && req.method==='prompts/get') console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{messages:[{role:'user',content:{type:'text',text:'prompt'}}]}})); } });`;
+    const client = new McpStdioClient({ command: process.execPath, args: ['-e', script], onNotification: (method) => notifications.push(method) });
+    try {
+      expect(await client.listResources()).toEqual([{ uri: 'file://one' }, { uri: 'file://two' }]);
+      await expect(client.readResource('file://one')).resolves.toMatchObject({ contents: [{ text: 'content' }] });
+      await expect(client.listPrompts()).resolves.toEqual([{ name: 'summarize' }]);
+      await expect(client.getPrompt('summarize')).resolves.toMatchObject({ messages: [{ role: 'user' }] });
+      expect(notifications).toContain('notifications/message');
+    } finally {
+      client.close();
+    }
+  });
+
   it('requires and consumes a matching approval before calling an MCP tool', async () => {
     const script = `
       process.stdin.on('data', chunk => { for (const line of chunk.toString().split('\\n')) { if (!line) continue; const req=JSON.parse(line); if(req.id && req.method==='initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{protocolVersion:'2026-07-28',capabilities:{},serverInfo:{name:'fixture',version:'1'}}})); if(req.id && req.method==='tools/call') console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{content:[{type:'text',text:'executed'}]}})); } });

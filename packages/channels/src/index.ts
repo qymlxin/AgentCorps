@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { isRetryablePlatformError } from './platform.js';
 
 export type ChannelKind = 'feishu' | 'dingtalk' | 'wecom' | 'custom';
 
@@ -73,7 +74,15 @@ export class HttpChannelConnector implements ChannelConnector {
         continue;
       }
       if (response.ok) {
-        await this.options.validateResponse?.(response);
+        try {
+          await this.options.validateResponse?.(response);
+        } catch (error) {
+          if (isRetryablePlatformError(error) && attempt < maxAttempts) {
+            await delay(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs * attempt);
+            continue;
+          }
+          throw error;
+        }
         return { statusCode: response.status, attempts: attempt };
       }
       if (!retryableStatus(response.status) || attempt === maxAttempts) throw new Error(`Channel delivery failed: HTTP ${response.status}`);
@@ -154,4 +163,5 @@ export function verifyHmacSha256(body: string, signature: string, secret: string
 
 export * from './provider.js';
 export * from './platform.js';
+export * from './wecom.js';
 export * from './state.js';

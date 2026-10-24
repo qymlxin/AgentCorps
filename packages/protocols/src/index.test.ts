@@ -22,6 +22,36 @@ describe('A2A client', () => {
     }
   });
 
+  it('enforces remote trust policy and capability negotiation', async () => {
+    const client = new A2AClient({
+      agentUrl: 'http://agent.example.test',
+      requiredCapabilities: ['streaming'],
+      trust: { allowedOrigins: ['http://agent.example.test'], verifyAgentCard: (card) => { if ((card as { version?: string }).version !== '1.0') throw new Error('untrusted card'); } },
+      fetchImpl: async () => new Response(JSON.stringify({ name: 'trusted', url: 'http://agent.example.test', version: '1.0', capabilities: { streaming: true } }), { status: 200 }),
+    });
+    await expect(client.getAgentCard()).resolves.toMatchObject({ name: 'trusted', version: '1.0' });
+    const rejected = new A2AClient({ agentUrl: 'http://agent.example.test', trust: { requireHttps: true }, fetchImpl: async () => new Response(JSON.stringify({ name: 'insecure', url: 'http://agent.example.test' }), { status: 200 }) });
+    await expect(rejected.getAgentCard()).rejects.toThrow('untrusted_transport');
+  });
+
+  it('streams SSE events, reconnects with Last-Event-ID, and deduplicates replayed events', async () => {
+    let calls = 0;
+    const stream = (chunks: string[], fail = false): ReadableStream<Uint8Array> => new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk)); if (fail) setTimeout(() => controller.error(new Error('connection reset')), 0); else controller.close(); } });
+    const client = new A2AClient({
+      agentUrl: 'http://agent.example.test',
+      fetchImpl: async (_input, init) => {
+        calls += 1;
+        if (calls === 1) return new Response(stream(['id: 1\nevent: update\ndata: {"state":"working"}\n\n'], true), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        expect(new Headers(init?.headers).get('last-event-id')).toBe('1');
+        return new Response(stream(['id: 1\ndata: {"state":"working"}\n\nid: 2\ndata: {"state":"completed"}\n\n']), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      },
+    });
+    const events: unknown[] = [];
+    for await (const event of client.streamMessage('stream this', undefined, { idempotencyKey: 'stream-1', reconnectAttempts: 1 })) events.push(event.data);
+    expect(events).toEqual([{ state: 'working' }, { state: 'completed' }]);
+    expect(calls).toBe(2);
+  });
+
   it('rejects malformed Agent Cards and supports cancellation with abort signals', async () => {
     const calls: string[] = [];
     const client = new A2AClient({

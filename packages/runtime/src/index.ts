@@ -201,6 +201,15 @@ export class MockAgent implements AgentAdapter {
   }
 }
 
+export class ApprovalRequiredError extends Error {
+  readonly approvalId: string;
+  constructor(approvalId: string) {
+    super(`Tool execution requires approval: ${approvalId}`);
+    this.name = 'ApprovalRequiredError';
+    this.approvalId = approvalId;
+  }
+}
+
 export interface TaskRuntimeOptions {
   readonly now?: () => string;
   readonly id?: (prefix: string) => string;
@@ -303,7 +312,8 @@ export class TaskRuntime {
       if (this.tasks.get(taskId)?.status !== 'cancelled') this.changeStatus(this.tasks.get(taskId)!, 'succeeded');
     } catch (error) {
       if (this.tasks.get(taskId)?.status !== 'cancelled') {
-        this.changeStatus(this.tasks.get(taskId)!, 'failed', error instanceof Error ? error.message : String(error));
+        if (error instanceof ApprovalRequiredError) this.changeStatus(this.tasks.get(taskId)!, 'waiting_approval', error.message);
+        else this.changeStatus(this.tasks.get(taskId)!, 'failed', error instanceof Error ? error.message : String(error));
       }
     } finally {
       this.activeRuns.delete(taskId);

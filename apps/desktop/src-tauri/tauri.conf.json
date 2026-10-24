@@ -14,5 +14,5 @@
     ],
     "security": { "csp": "default-src 'self' http://127.0.0.1:43210; connect-src 'self' http://127.0.0.1:43210 ws://127.0.0.1:43210; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'" }
   },
-  "bundle": { "active": true, "targets": "all" }
+  "bundle": { "active": true, "targets": ["app"], "icon": ["icons/icon.png"] }
 }

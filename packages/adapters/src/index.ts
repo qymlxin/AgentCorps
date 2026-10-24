@@ -2,7 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { AgentDescriptor } from '@agentcorps/domain';
 import { A2AClient, AcpStdioClient, type A2AClientOptions, type AcpClientOptions } from '@agentcorps/protocols';
+import { GuardedMcpToolExecutor, McpStdioClient, type McpTool } from '@agentcorps/mcp';
+import { SandboxedCommandRunner, type ApprovalService, type PolicyEngine, type SandboxedCommandOptions, type SecurityCapability, type SecurityContext } from '@agentcorps/security';
 import type { AgentAdapter, AgentProtocolEvent, AgentRequest } from '@agentcorps/runtime';
+import { ApprovalRequiredError } from '@agentcorps/runtime';
 
 export interface JsonlAgentOptions {
   readonly id: string;
@@ -166,6 +169,90 @@ export class JsonlAgentAdapter implements AgentAdapter {
   }
 }
 
+export interface McpAgentAdapterOptions {
+  readonly id: string;
+  readonly displayName: string;
+  readonly client?: McpStdioClient;
+  readonly clientOptions?: ConstructorParameters<typeof McpStdioClient>[0];
+  readonly tool?: McpTool;
+  /** Selects one discovered tool for each task; enables dynamic MCP tool injection. */
+  readonly toolSelector?: (tools: readonly McpTool[], request: AgentRequest) => McpTool | undefined;
+  readonly discoverTools?: boolean;
+  readonly policy: PolicyEngine;
+  readonly approvals: ApprovalService;
+  readonly context: SecurityContext | ((request: AgentRequest) => SecurityContext);
+  readonly capabilityFor?: (tool: McpTool) => SecurityCapability;
+  readonly argumentsFor?: (request: AgentRequest) => Record<string, unknown>;
+  readonly approvalId?: string | ((request: AgentRequest) => string | undefined);
+  readonly version?: string;
+  readonly capabilities?: AgentDescriptor['capabilities'];
+}
+
+/** Runs one explicitly configured MCP tool through policy and approval gates. */
+export class McpAgentAdapter implements AgentAdapter {
+  readonly descriptor: AgentDescriptor;
+  private readonly client: McpStdioClient;
+  private readonly pendingRequests = new Map<string, string>();
+
+  constructor(private readonly options: McpAgentAdapterOptions) {
+    if (!options.client && !options.clientOptions) throw new Error('MCP agent adapter requires a client or clientOptions');
+    this.client = options.client ?? new McpStdioClient(options.clientOptions!);
+    this.descriptor = {
+      id: options.id,
+      displayName: options.displayName,
+      version: options.version ?? 'unprobed',
+      transport: 'stdio-jsonl',
+      capabilities: options.capabilities ?? [],
+    };
+  }
+
+  async execute(request: AgentRequest): Promise<void> {
+    if (request.signal.aborted) throw abortError();
+    const context = typeof this.options.context === 'function' ? this.options.context(request) : this.options.context;
+    const executor = new GuardedMcpToolExecutor({
+      client: this.client,
+      policy: this.options.policy,
+      approvals: this.options.approvals,
+      context,
+      capabilityFor: this.options.capabilityFor ?? (() => 'process.exec'),
+      onEvent: (event) => request.emitProtocol?.({ protocol: 'mcp', direction: event.direction === 'update' ? 'update' : event.direction, method: event.method, ...(event.metadata ? { metadata: event.metadata } : {}) }),
+    });
+    const arguments_ = this.options.argumentsFor?.(request) ?? { input: request.task.objective };
+    const approvalId = typeof this.options.approvalId === 'function' ? this.options.approvalId(request) : this.options.approvalId;
+    const tool = await this.resolveTool(request);
+    const result = await executor.callTool(request.task.id, tool, arguments_, approvalId, this.pendingRequests.get(request.task.id), request.signal);
+    if (result.status === 'approval_required') {
+      this.pendingRequests.set(request.task.id, result.requestId);
+      throw new ApprovalRequiredError(result.approvalId!);
+    }
+    this.pendingRequests.delete(request.task.id);
+    if (request.signal.aborted) throw abortError();
+    request.emit(JSON.stringify(result.result), 'assistant');
+  }
+
+  private async resolveTool(request: AgentRequest): Promise<McpTool> {
+    if (this.options.tool) return this.options.tool;
+    if (this.options.discoverTools === false) throw new Error('MCP tool discovery is disabled and no tool was configured');
+    const tools = await this.client.listTools();
+    const selected = this.options.toolSelector?.(tools, request) ?? selectMcpTool(tools, request.task.objective);
+    if (!selected) throw new Error(`No MCP tool matched task objective: ${request.task.objective}`);
+    return selected;
+  }
+
+  close(): void { this.client.close(); }
+}
+
+export function selectMcpTool(tools: readonly McpTool[], objective: string): McpTool | undefined {
+  const tokens = new Set(objective.toLowerCase().split(/[^a-z0-9_:-]+/).filter((token) => token.length >= 3));
+  let best: { tool: McpTool; score: number } | undefined;
+  for (const tool of tools) {
+    const text = `${tool.name} ${tool.description ?? ''}`.toLowerCase();
+    const score = [...tokens].reduce((total, token) => total + (text.includes(token) ? 1 : 0), 0);
+    if (score > (best?.score ?? 0)) best = { tool, score };
+  }
+  return best?.score ? best.tool : undefined;
+}
+
 export interface A2AAgentAdapterOptions {
   readonly id: string;
   readonly displayName: string;
@@ -297,6 +384,7 @@ export interface CommandAgentOptions {
   readonly sessionIdEnv?: string;
   readonly promptPlacement?: 'argument' | 'stdin';
   readonly outputFormat?: 'text' | 'jsonl';
+  readonly sandbox?: Omit<SandboxedCommandOptions, 'executable' | 'args' | 'cwd' | 'env' | 'signal'>;
 }
 
 function textFromAgentEvent(value: unknown): string | undefined {
@@ -342,7 +430,19 @@ export class CommandAgentAdapter implements AgentAdapter {
   async execute(request: AgentRequest): Promise<void> {
     const options = this.options;
     const prompt = buildAgentPrompt(request);
-    const child = spawn(options.command, [...(options.args ?? []), ...(options.promptPlacement === 'stdin' ? [] : [prompt])], {
+    const args = [...(options.args ?? []), ...(options.promptPlacement === 'stdin' ? [] : [prompt])];
+    const environment: Record<string, string> = Object.fromEntries(Object.entries({ ...process.env, ...options.env, [options.sessionIdEnv ?? 'AGENTCORPS_SESSION_ID']: request.task.sessionId }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+    if (options.sandbox) {
+      const result = await new SandboxedCommandRunner().run({ ...options.sandbox, executable: options.command, args, ...(options.cwd ? { cwd: options.cwd } : {}), env: environment, signal: request.signal });
+      if (result.stderr) request.emit(result.stderr, 'stderr');
+      if (result.exitCode !== 0) throw new Error(`Agent exited before completion (code=${result.exitCode}, signal=${result.signal ?? 'none'})`);
+      if (options.outputFormat !== 'jsonl') request.emit(result.stdout, 'assistant');
+      else for (const line of result.stdout.split('\\n').filter(Boolean)) {
+        try { request.emit(textFromAgentEvent(JSON.parse(line)) ?? line, 'assistant'); } catch { request.emit(line, 'stdout'); }
+      }
+      return;
+    }
+    const child = spawn(options.command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env, [options.sessionIdEnv ?? 'AGENTCORPS_SESSION_ID']: request.task.sessionId },
       stdio: ['pipe', 'pipe', 'pipe'],

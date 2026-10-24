@@ -1,3 +1,4 @@
+import { assertCommandRisk, type CommandRisk } from './risk.js';
 import { spawn } from 'node:child_process';
 
 import type { ApprovalService, PolicyEngine, SecurityContext, ToolRequest } from './index.js';
@@ -6,12 +7,15 @@ export interface SecureCommandExecutionOptions extends SandboxedCommandOptions {
   readonly request: ToolRequest;
   readonly context: SecurityContext;
   readonly approvalId?: string;
+  readonly maximumCommandRisk?: CommandRisk;
 }
 
 export class SecureCommandExecutor {
   constructor(private readonly policy: PolicyEngine, private readonly approvals: ApprovalService, private readonly runner = new SandboxedCommandRunner()) {}
 
   async run(options: SecureCommandExecutionOptions): Promise<SandboxedCommandResult> {
+    const commandText = [options.executable, ...(options.args ?? [])].join(' ');
+    assertCommandRisk(commandText, options.maximumCommandRisk ?? 'critical');
     const decision = this.policy.evaluate(options.request, options.context);
     if (decision.decision === 'deny') throw new Error(`Security policy denied command: ${decision.reason}`);
     if (decision.decision === 'approval_required') {
@@ -36,6 +40,9 @@ export interface SandboxInvocationOptions {
   readonly containerImage?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly inheritEnvironment?: boolean;
+  readonly maxMemoryMb?: number;
+  readonly maxCpu?: number;
+  readonly maxPids?: number;
 }
 
 export interface SandboxInvocation {
@@ -53,10 +60,15 @@ export function buildSandboxInvocation(options: SandboxInvocationOptions, platfo
   }
   if (!options.containerImage?.trim()) throw new Error('Container sandbox requires containerImage');
   const networkArgs = options.network === 'full' ? [] : ['--network', 'none'];
+  const resourceArgs = [
+    ...(positiveInteger(options.maxMemoryMb, 0) ? ['--memory', `${positiveInteger(options.maxMemoryMb, 0)}m`] : []),
+    ...(positiveNumber(options.maxCpu, 0) ? ['--cpus', String(positiveNumber(options.maxCpu, 0))] : []),
+    ...(positiveInteger(options.maxPids, 0) ? ['--pids-limit', String(positiveInteger(options.maxPids, 0))] : []),
+  ];
   const envArgs = Object.entries(env).flatMap(([name, value]) => ['--env', `${name}=${value}`]);
   return {
     command: 'docker',
-    args: ['run', '--rm', '--init', ...networkArgs, '-v', `${options.workspaceRoot}:/workspace:rw`, '-w', '/workspace', ...envArgs, options.containerImage, options.executable, ...(options.args ?? [])],
+    args: ['run', '--rm', '--init', ...networkArgs, ...resourceArgs, '-v', `${options.workspaceRoot}:/workspace:rw`, '-w', '/workspace', ...envArgs, options.containerImage, options.executable, ...(options.args ?? [])],
     env: {},
   };
 }
@@ -109,6 +121,7 @@ export interface SandboxedCommandOptions extends SandboxInvocationOptions {
   readonly cwd?: string;
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface SandboxedCommandResult {
@@ -131,14 +144,19 @@ export class SandboxedCommandRunner {
       let outputBytes = 0;
       let settled = false;
       let timer: NodeJS.Timeout | undefined;
+      let abortListener: (() => void) | undefined;
       const finishError = (error: Error): void => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        if (abortListener) options.signal?.removeEventListener('abort', abortListener);
         child.kill('SIGTERM');
         reject(error);
       };
       timer = setTimeout(() => finishError(new Error(`Sandboxed command timed out after ${timeoutMs}ms`)), timeoutMs);
+      abortListener = () => finishError(new Error('Sandboxed command aborted'));
+      if (options.signal?.aborted) return abortListener();
+      options.signal?.addEventListener('abort', abortListener, { once: true });
       const collect = (target: Buffer[]) => (chunk: Buffer) => {
         if (settled) return;
         outputBytes += chunk.byteLength;
@@ -155,6 +173,7 @@ export class SandboxedCommandRunner {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        if (abortListener) options.signal?.removeEventListener('abort', abortListener);
         const redact = options.credentialProxy ? (value: string) => options.credentialProxy!.redact(value) : (value: string) => value;
         resolve({ exitCode: code ?? -1, ...(signal ? { signal } : {}), stdout: redact(Buffer.concat(stdout).toString('utf8')), stderr: redact(Buffer.concat(stderr).toString('utf8')) });
       });
@@ -170,4 +189,8 @@ function executionEnvironment(invocationEnv: Readonly<Record<string, string>>, i
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return Number.isInteger(value) && value! > 0 ? value! : fallback;
+}
+
+function positiveNumber(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }

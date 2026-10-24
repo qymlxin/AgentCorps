@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDingTalkTokenProvider, createWecomTokenProvider, DingTalkRobotAdapter, FeishuEventAdapter, FeishuTenantTokenProvider, GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, OAuthClientCredentialsTokenProvider, OAuthHttpChannelConnector, PlatformApiError, assertPlatformSuccess, encryptWecomMessage, parseWecomEncryptedInbound, platformResponseValidator, signDingTalkCallback, signFeishuEvent, signHmacSha256, signWecomCallback, SpacedRateLimiter, verifyDingTalkCallbackSignature, verifyFeishuEventSignature, verifyHmacSha256, verifyWecomCallbackSignature, WecomMessageAdapter } from './index.js';
+import { createDingTalkTokenProvider, createWecomTokenProvider, DingTalkRobotAdapter, FeishuEventAdapter, FeishuTenantTokenProvider, formatWecomPassiveReply, GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, OAuthClientCredentialsTokenProvider, OAuthHttpChannelConnector, PlatformApiError, assertPlatformSuccess, encryptWecomMessage, parseWecomEncryptedInbound, platformResponseValidator, signDingTalkCallback, signFeishuEvent, signHmacSha256, signWecomCallback, SpacedRateLimiter, verifyDingTalkCallbackSignature, verifyFeishuEventSignature, verifyHmacSha256, verifyWecomCallbackSignature, WecomMessageAdapter } from './index.js';
 
 describe('channel adapters', () => {
   it('normalizes a webhook message and formats an outbound reply', () => {
@@ -131,6 +131,8 @@ describe('channel adapters', () => {
     const encodingAesKey = Buffer.alloc(32, 7).toString('base64').replace(/=+$/, '');
     const encrypted = encryptWecomMessage('<xml><MsgId><![CDATA[wx-2]]></MsgId><FromUserName><![CDATA[user-2]]></FromUserName><ToUserName><![CDATA[corp-1]]></ToUserName><Content><![CDATA[encrypted hello]]></Content></xml>', encodingAesKey, 'corp-1', Buffer.alloc(16, 1));
     expect(parseWecomEncryptedInbound(`<xml><ToUserName><![CDATA[corp-1]]></ToUserName><Encrypt><![CDATA[${encrypted}]]></Encrypt></xml>`, encodingAesKey, 'corp-1')).toMatchObject({ MsgId: 'wx-2', FromUserName: 'user-2', Content: 'encrypted hello' });
+    const replyXml = formatWecomPassiveReply({ toUserName: 'user-2', fromUserName: 'corp-1', content: 'received' }, encodingAesKey, 'wecom-token', 'nonce-reply', '1700000000', Buffer.alloc(16, 2));
+    expect(parseWecomEncryptedInbound(replyXml, encodingAesKey, 'corp-1')).toMatchObject({ ToUserName: 'user-2', FromUserName: 'corp-1', Content: 'received' });
 
 
     expect(() => assertPlatformSuccess('dingtalk', { errcode: 40014, errmsg: 'invalid access_token' })).toThrow('dingtalk API error 40014');

@@ -1,7 +1,6 @@
 # 渠道网关与共享会话
 
-> 版本：0.1.0  
-> 状态：已实现官方消息 fixture 适配器、回调签名校验基础、持久化去重/会话/投递状态和可注入的 HTTP outbound connector；真实平台账号、企业微信加密 XML 解密、平台业务错误码完整映射和生产回调重放防护仍需部署级验证。
+> 状态：已实现官方消息 fixture 适配器、回调签名校验、企微 AES-256-CBC 加密 XML 解密/接收方校验/被动回复、持久化去重/会话/投递状态、OAuth/查询参数 token provider、平台业务错误码验证和可注入的官方 outbound connector；外部平台账号、完整业务错误码矩阵和生产回调重放防护仍需部署级验证。
 > 更新日期：2026-10-24
 
 ## 1. 功能范围
@@ -22,7 +21,7 @@
 
 ## 2. HTTP 接口
 
-入站 webhook 支持飞书事件挑战响应、飞书请求头签名、钉钉时间戳/签名参数，以及企业微信 `msg_signature`、加密 XML 和 EncodingAESKey 解密配置。企业微信回调需要在 `ChannelGatewayOptions` 中同时配置 `webhookSecrets` 和 `webhookEncryptionKeys`；部署方还应配置 `webhookReceiveIds` 做接收方校验。
+入站 webhook 支持飞书事件挑战响应、飞书请求头签名、钉钉时间戳/签名参数，以及企业微信 `msg_signature`、加密 XML、EncodingAESKey 解密和接收方校验配置。企业微信回调需要在 `ChannelGatewayOptions` 中同时配置 `webhookSecrets` 和 `webhookEncryptionKeys`；部署方还应配置 `webhookReceiveIds` 做接收方校验。加密企业微信回调成功后返回官方 XML 被动回复，而不是 JSON 调试响应。
 
 ```text
 POST /channels/feishu/webhook
@@ -60,7 +59,7 @@ GET /channels
 - 网关全局 Bearer token 仍可保护渠道路由；渠道 HMAC 是第二层入站来源校验。
 - HMAC 验证使用固定时间比较，签名以原始请求体为输入，避免解析后重编码造成歧义。
 - 渠道文本默认是不可信输入，创建 Task 前不会获得工具权限；Task 运行仍经过 AgentCorps 策略和沙箱。
-- 外部用户 ID 当前保留在规范化消息和原始 payload 边界，尚未自动映射为本地设备身份或管理员权限。
+- 如果配置了 `ExternalIdentityResolver`，每个外部用户必须先绑定本地 device ID 和角色；未映射、已撤销或角色不足的身份不会创建 Task。管理员角色只在显式绑定后生效。
 - 出站 payload 只做格式化，不代表已发送。凭据、重试、回调校验和审计需要具体平台 connector。
 
 ## 4. 已验证行为
@@ -71,12 +70,13 @@ Gateway fixture 已覆盖：
 - 首条消息创建共享 Session、Message 和 Task
 - 相同外部消息 ID 的幂等去重
 - 出站 payload 格式化
+- 企业微信官方风格加密 XML 的 AES-256-CBC 解密、receive id 校验、签名校验和被动回复 XML
 - 原有健康检查、任务路由、会话路由和 Bearer 认证回归
 
-## 5. 后续工作
+## 5. 部署级验证与后续工作
 
-1. 为每个平台实现独立 payload schema、时间戳/nonce 校验和官方出站 API connector。
-2. 将渠道会话映射、去重记录和发送状态持久化到 SQLite，而不是仅保存在进程内存。
-3. 增加设备配对、用户身份映射、群聊权限和管理员审批。
+1. 为每个平台配置真实租户凭据，验证 token 轮换、业务错误码和官方回调重放边界。
+2. CLI `serve` 已使用 SQLite 保存渠道去重、会话和投递状态；其他自定义 Gateway 部署必须显式注入 `SqliteChannelStateStore`，不能依赖默认内存存储。
+3. 为群聊增加按角色和会话范围的细粒度授权，并把管理员绑定变更写入审计日志。
 4. 将 Task 状态和增量输出安全地转换为渠道回复，增加限流、分片和失败重试。
 5. 在手机远程查看场景中复用同一 Session 与事件流，而不是为渠道创建第二套状态模型。

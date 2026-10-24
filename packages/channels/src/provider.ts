@@ -1,5 +1,6 @@
 import type { ChannelConnector, ChannelDeliveryResult, HttpChannelConnectorOptions, OutboundMessage } from './index.js';
 import { HttpChannelConnector } from './index.js';
+import { platformResponseValidator } from './platform.js';
 
 export interface AccessTokenProvider {
   getToken(): Promise<string>;
@@ -149,6 +150,7 @@ export class OAuthHttpChannelConnector implements ChannelConnector {
       ...(this.options.maxAttempts !== undefined ? { maxAttempts: this.options.maxAttempts } : {}),
       ...(this.options.backoffMs !== undefined ? { backoffMs: this.options.backoffMs } : {}),
       ...(this.options.headers ? { headers: this.options.headers } : {}),
+      ...(this.options.validateResponse ? { validateResponse: this.options.validateResponse } : {}),
       fetchImpl: async (input, init) => {
         const call = async (): Promise<Response> => {
           await this.options.rateLimiter?.acquire();
@@ -166,6 +168,60 @@ export class OAuthHttpChannelConnector implements ChannelConnector {
     });
     return await delegate.send(message, payload);
   }
+}
+
+export interface QueryAccessTokenChannelConnectorOptions extends Omit<HttpChannelConnectorOptions, 'endpoint' | 'headers' | 'fetchImpl'> {
+  readonly endpoint: string | ((message: OutboundMessage) => string);
+  readonly tokenProvider: AccessTokenProvider;
+  readonly tokenParameter?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly fetchImpl?: typeof fetch;
+}
+
+/** Sends APIs such as WeCom that carry access_token in the query string. */
+export class QueryAccessTokenChannelConnector implements ChannelConnector {
+  constructor(private readonly options: QueryAccessTokenChannelConnectorOptions) {}
+  async send(message: OutboundMessage, payload: unknown): Promise<ChannelDeliveryResult> {
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    let refreshed = false;
+    const endpoint = typeof this.options.endpoint === 'function' ? this.options.endpoint(message) : this.options.endpoint;
+    const delegate = new HttpChannelConnector({
+      endpoint,
+      ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {}),
+      ...(this.options.maxAttempts !== undefined ? { maxAttempts: this.options.maxAttempts } : {}),
+      ...(this.options.backoffMs !== undefined ? { backoffMs: this.options.backoffMs } : {}),
+      ...(this.options.headers ? { headers: this.options.headers } : {}),
+      ...(this.options.validateResponse ? { validateResponse: this.options.validateResponse } : {}),
+      fetchImpl: async (input, init) => {
+        const call = async (): Promise<Response> => {
+          const token = await this.options.tokenProvider.getToken();
+          const url = new URL(String(input));
+          url.searchParams.set(this.options.tokenParameter ?? 'access_token', token);
+          return await fetchImpl(url, init);
+        };
+        let response = await call();
+        if (response.status === 401 && !refreshed) {
+          refreshed = true;
+          this.options.tokenProvider.invalidate();
+          response = await call();
+        }
+        return response;
+      },
+    });
+    return await delegate.send(message, payload);
+  }
+}
+
+export function createFeishuMessageConnector(tokenProvider: AccessTokenProvider, fetchImpl?: typeof fetch): OAuthHttpChannelConnector {
+  return new OAuthHttpChannelConnector({ endpoint: 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id', tokenProvider, validateResponse: platformResponseValidator('feishu'), ...(fetchImpl ? { fetchImpl } : {}) });
+}
+
+export function createWecomMessageConnector(tokenProvider: AccessTokenProvider, fetchImpl?: typeof fetch): QueryAccessTokenChannelConnector {
+  return new QueryAccessTokenChannelConnector({ endpoint: 'https://qyapi.weixin.qq.com/cgi-bin/message/send', tokenProvider, validateResponse: platformResponseValidator('wecom'), ...(fetchImpl ? { fetchImpl } : {}) });
+}
+
+export function createDingTalkRobotConnector(endpoint: string, fetchImpl?: typeof fetch): HttpChannelConnector {
+  return new HttpChannelConnector({ endpoint, validateResponse: platformResponseValidator('dingtalk'), ...(fetchImpl ? { fetchImpl } : {}) });
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

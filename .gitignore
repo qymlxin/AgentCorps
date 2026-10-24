@@ -8,4 +8,6 @@ coverage
 !.env.example
 *.log
 *.tsbuildinfo
+**/target
+apps/desktop/src-tauri/gen
 .agentcorps

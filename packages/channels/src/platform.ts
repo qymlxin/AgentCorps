@@ -9,8 +9,22 @@ export class PlatformApiError extends Error {
 }
 
 export function platformResponseValidator(channel: ChannelKind): (response: Response) => Promise<void> {
+  return platformResponseValidatorFor(channel);
+}
+
+export function isRetryablePlatformError(error: unknown): boolean {
+  if (!(error instanceof PlatformApiError)) return false;
+  if (typeof error.code === 'number') return error.code === 429 || error.code === 408 || error.code >= 500;
+  return ['rate_limited', 'temporarily_unavailable', 'timeout', 'system_busy'].includes(error.code.toLowerCase());
+}
+
+export function platformResponseValidatorFor(channel: ChannelKind): (response: Response) => Promise<void> {
   return async (response) => {
-    const body = await response.clone().json() as unknown;
+    if (!response.ok) throw new PlatformApiError(channel, response.status, `HTTP ${response.status}`);
+    const text = await response.clone().text();
+    if (!text.trim()) return;
+    let body: unknown;
+    try { body = JSON.parse(text) as unknown; } catch { return; }
     assertPlatformSuccess(channel, body);
   };
 }

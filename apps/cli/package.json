@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "bin": { "agentcorps": "dist/index.js" },
-  "dependencies": { "@agentcorps/runtime": "workspace:*", "@agentcorps/domain": "workspace:*", "@agentcorps/gateway": "workspace:*", "@agentcorps/adapters": "workspace:*", "@agentcorps/memory": "workspace:*", "@agentcorps/session": "workspace:*" },
+  "dependencies": { "@agentcorps/runtime": "workspace:*", "@agentcorps/domain": "workspace:*", "@agentcorps/gateway": "workspace:*", "@agentcorps/channels": "workspace:*", "@agentcorps/adapters": "workspace:*", "@agentcorps/memory": "workspace:*", "@agentcorps/session": "workspace:*", "@agentcorps/security": "workspace:*" },
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run", "dev": "tsx src/index.ts" }
 }

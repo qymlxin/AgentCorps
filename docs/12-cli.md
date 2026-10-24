@@ -28,7 +28,7 @@ agentcorps task cancel TASK_ID --data-dir ~/.agentcorps
 agentcorps task retry TASK_ID --data-dir ~/.agentcorps
 ```
 
-任务和事件由所有 CLI 进程共享同一个 SQLite 数据库，因此重新打开终端后仍能查看历史；会话、消息和记忆也使用这个数据库。原始 JSONL 存储仍可用于迁移和调试；`data migrate` 会把旧版本的 `memory.jsonl` 与 `sessions.jsonl` 复制到 SQLite，`data backup` 和 `data restore` 用于离线文件级备份恢复。当前 `task run` 使用 mock Agent 验证生命周期，真实 Agent 适配器接入和 Agent 选择策略仍在后续功能中。
+任务和事件由所有 CLI 进程共享同一个 SQLite 数据库，因此重新打开终端后仍能查看历史；会话、消息、记忆、审批、渠道去重、渠道会话和投递状态也使用这个数据库。原始 JSONL 存储仍可用于迁移和调试；`data migrate` 会把旧版本的 `memory.jsonl` 与 `sessions.jsonl` 复制到 SQLite，`data backup` 和 `data restore` 用于离线文件级备份恢复。`task run` 默认使用 mock Agent 仅用于演示；CLI 也支持 `codex`、`claude-code`、`cursor` 和受沙箱约束的 `command` 适配器，正式部署应通过 `--agent` 明确选择并按需配置审批。
 
 ## 启动本地控制面
 
@@ -42,4 +42,17 @@ agentcorps data backup --data-dir ~/.agentcorps --output ~/agentcorps-backup.db
 agentcorps data restore --data-dir ~/.agentcorps --input ~/agentcorps-backup.db
 ```
 
-恢复前应停止正在使用该数据目录的 AgentCorps 进程；恢复后重新启动 Gateway。网关默认只绑定 `127.0.0.1`。在远程认证、签名和权限实现完成前，不要把端口绑定到公网或局域网。
+绑定外部渠道身份（绑定前，启用 `--identity-required` 的网关会拒绝该用户）：
+
+```bash
+agentcorps device provision --label channel-device --data-dir ~/.agentcorps
+agentcorps identity bind --channel feishu --external-user-id EXTERNAL_ID --device-id DEVICE_ID --role user --data-dir ~/.agentcorps
+agentcorps identity list --data-dir ~/.agentcorps
+agentcorps identity revoke --channel feishu --external-user-id EXTERNAL_ID --data-dir ~/.agentcorps
+```
+
+恢复前应停止正在使用该数据目录的 AgentCorps 进程；恢复后重新启动 Gateway。网关默认只绑定 `127.0.0.1`；需要远程绑定时必须提供 Bearer token，并建议同时配置 TLS、CORS 和外部身份绑定：
+
+```bash
+agentcorps serve --host 0.0.0.0 --token TOKEN --identity-required --data-dir ~/.agentcorps
+```

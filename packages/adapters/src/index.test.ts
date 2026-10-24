@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import type { AgentRequest } from '@agentcorps/runtime';
-import { A2AAgentAdapter, AcpAgentAdapter, CommandAgentAdapter, JsonlAgentAdapter, probeAgent, probeCommand } from './index.js';
+import { ApprovalService, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, createDefaultProfile } from '@agentcorps/security';
+import { A2AAgentAdapter, AcpAgentAdapter, CommandAgentAdapter, JsonlAgentAdapter, McpAgentAdapter, probeAgent, probeCommand } from './index.js';
 
 describe('local process adapters', () => {
   it('streams JSON frames and tolerates plain diagnostic lines', async () => {
@@ -95,6 +97,55 @@ describe('local process adapters', () => {
     expect(output[0]).not.toContain('do not expose this secret');
   });
 
+  it('executes an MCP tool through the task adapter and preserves approval boundaries', async () => {
+    const script = `process.stdin.on('data', chunk => { for (const line of chunk.toString().split('\\n')) { if (!line) continue; const req=JSON.parse(line); if(req.id && req.method==="initialize") console.log(JSON.stringify({jsonrpc:"2.0",id:req.id,result:{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}})); if(req.id && req.method==="tools/call") console.log(JSON.stringify({jsonrpc:"2.0",id:req.id,result:{content:[{type:'text',text:req.params.arguments.input}]}})); } });`;
+    const approvals = new ApprovalService(new InMemoryApprovalStore(), () => '2026-10-24T00:00:00.000Z', () => 'approval-mcp');
+    const adapter = new McpAgentAdapter({
+      id: 'mcp-fixture',
+      displayName: 'MCP fixture',
+      clientOptions: { command: process.execPath, args: ['-e', script] },
+      tool: { name: 'echo', inputSchema: { type: "object" } },
+      policy: new PolicyEngine(new InMemoryAuditLog(), () => '2026-10-24T00:00:00.000Z'),
+      approvals,
+      context: { mode: 'code', profile: createDefaultProfile('/workspace', 'S2') },
+      capabilityFor: () => 'process.exec',
+      approvalId: () => approvalId,
+    });
+    let approvalId: string | undefined;
+    const output: string[] = [];
+    const protocol: string[] = [];
+    const request = { task: { id: 'task-mcp' as never, workspaceId: 'ws', sessionId: 's', title: 'MCP task', objective: 'echo objective', mode: 'code' as const, status: 'running' as const, createdAt: '', updatedAt: '' }, runId: 'run-mcp' as never, signal: new AbortController().signal, emit: (text: string) => output.push(text), emitProtocol: (event: { direction: string; method: string }) => protocol.push(`${event.direction}:${event.method}`) };
+    try {
+      await expect(adapter.execute(request)).rejects.toMatchObject({ name: 'ApprovalRequiredError' });
+      approvalId = approvals.list()[0]?.id;
+      expect(approvalId).toBe('approval-mcp');
+      approvals.approve(approvalId!, 'local-user');
+      await adapter.execute(request);
+      expect(output[0]).toContain('echo objective');
+      expect(protocol).toEqual(['request:tools/call', 'response:approval_required', 'request:tools/call', 'update:approval_consumed', 'response:tools/call']);
+    } finally {
+      adapter.close();
+    }
+  });
+
+  it('discovers and selects an MCP tool from the task objective', async () => {
+    const fixture = fileURLToPath(new URL('./fixtures/dynamic-mcp.cjs', import.meta.url));
+    const script = `process.stdin.on('data', chunk => { for (const line of chunk.toString().split('\\n')) { if (!line) continue; const req=JSON.parse(line); if(req.id && req.method==="initialize") console.log(JSON.stringify({jsonrpc:"2.0",id:req.id,result:{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}})); if(req.id && req.method==="tools/list") console.log(JSON.stringify({jsonrpc:"2.0",id:req.id,result:{tools:[{name:"echo_text",description:"echo text input",inputSchema:{type:'object}}]}})); if(req.id && req.method==="tools/call") console.log(JSON.stringify({jsonrpc:"2.0",id:req.id,result:{content:[{type:"text",text:"dynamic tool selected"}]}})); } });`;
+    const approvals = new ApprovalService(new InMemoryApprovalStore(), () => '2026-10-24T00:00:00.000Z', () => 'approval-dynamic');
+    let approvalId: string | undefined;
+    const adapter = new McpAgentAdapter({ id: 'dynamic-mcp', displayName: 'Dynamic MCP', clientOptions: { command: process.execPath, args: [fixture] }, policy: new PolicyEngine(new InMemoryAuditLog(), () => '2026-10-24T00:00:00.000Z'), approvals, context: { mode: 'code', profile: createDefaultProfile('/workspace', 'S2') }, capabilityFor: () => 'process.exec', approvalId: () => approvalId });
+    const output: string[] = [];
+    const request = { task: { id: 'task-dynamic' as never, workspaceId: 'ws', sessionId: 's', title: 'MCP task', objective: 'echo text input', mode: 'code' as const, status: 'running' as const, createdAt: '', updatedAt: '' }, runId: 'run-dynamic' as never, signal: new AbortController().signal, emit: (text: string) => output.push(text) };
+    try {
+      await expect(adapter.execute(request)).rejects.toMatchObject({ name: 'ApprovalRequiredError' });
+      approvalId = approvals.list()[0]?.id;
+      expect(approvalId).toBe('approval-dynamic');
+      approvals.approve(approvalId!, 'local-user');
+      await adapter.execute(request);
+      expect(output[0]).toContain('dynamic tool selected');
+    } finally { adapter.close(); }
+  });
+
   it('executes an A2A task through the common AgentAdapter contract', async () => {
     const output: string[] = [];
     const protocolEvents: string[] = [];
@@ -121,7 +172,7 @@ describe('local process adapters', () => {
   it('executes and reuses an ACP session through the common AgentAdapter contract', async () => {
     const output: string[] = [];
     const protocolEvents: string[] = [];
-    const script = "const rl=require('node:readline').createInterface({input:process.stdin}); let sessionCount=0; rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); if(m.method==='session/new'){sessionCount++; console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'acp-session-'+sessionCount}}));} if(m.method==='session/prompt') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn',sessionId:m.params.sessionId}}));});";
+    const script = "const rl=require('node:readline').createInterface({input:process.stdin}); let sessionCount=0; rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize') console.log(JSON.stringify({jsonrpc:\"2.0\",id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); if(m.method==='session/new'){sessionCount++; console.log(JSON.stringify({jsonrpc:\"2.0\",id:m.id,result:{sessionId:'acp-session-'+sessionCount}}));} if(m.method==='session/prompt') console.log(JSON.stringify({jsonrpc:\"2.0\",id:m.id,result:{stopReason:'end_turn',sessionId:m.params.sessionId}}));});";
     const adapter = new AcpAgentAdapter({
       id: 'acp-fixture',
       displayName: 'ACP fixture',

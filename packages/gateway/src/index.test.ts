@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { listenGateway } from './index.js';
 import { TaskRuntime } from '@agentcorps/runtime';
-import { signHmacSha256 } from '@agentcorps/channels';
-import { createDefaultProfile } from '@agentcorps/security';
+import { signHmacSha256, encryptWecomMessage, signWecomCallback, parseWecomEncryptedInbound } from '@agentcorps/channels';
+import { createDefaultProfile, DevicePairingService, DeviceTokenVerifier, ExternalIdentityResolver, InMemoryDeviceIdentityStore, InMemoryExternalIdentityBindingStore, SignedAccessTokenService } from '@agentcorps/security';
 
 describe('gateway', () => {
   it('exposes health, task creation, and task event history', async () => {
@@ -51,7 +51,25 @@ describe('gateway', () => {
       await reader.cancel();
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
-  });  it('bridges signed channel webhooks into shared sessions and tasks', async () => {
+  });  it('requires explicit external identity mapping before creating channel tasks', async () => {
+    const resolver = new ExternalIdentityResolver(new InMemoryExternalIdentityBindingStore(), () => '2026-10-24T00:00:00.000Z');
+    const secret = 'channel-secret';
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { channels: { webhookSecrets: { feishu: secret }, identityResolver: resolver } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const payload = JSON.stringify({ header: { event_id: 'identity-evt' }, event: { message: { message_id: 'identity-msg', chat_id: 'identity-chat', message_type: 'text', content: JSON.stringify({ text: 'hello' }) }, sender: { sender_id: { open_id: 'external-user' } } } });
+    const headers = { 'content-type': 'application/json', 'x-agentcorps-signature': signHmacSha256(payload, secret) };
+    try {
+      expect((await fetch(`${base}/channels/feishu/webhook`, { method: 'POST', headers, body: payload })).status).toBe(403);
+      resolver.bind('feishu', 'external-user', 'device-1', ['user']);
+      expect((await fetch(`${base}/channels/feishu/webhook`, { method: 'POST', headers, body: payload })).status).toBe(202);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('bridges signed channel webhooks into shared sessions and tasks', async () => {
     const secret = 'channel-secret';
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { channels: { webhookSecrets: { feishu: secret } } });
     const address = server.address();
@@ -72,6 +90,26 @@ describe('gateway', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
+  it('returns an encrypted WeCom passive reply after accepting a signed callback', async () => {
+    const token = 'wecom-token';
+    const receiveId = 'corp-1';
+    const encodingAesKey = Buffer.alloc(32, 7).toString('base64').replace(/=+$/, '');
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nonce = 'nonce-1';
+    const encrypted = encryptWecomMessage('<xml><MsgId><![CDATA[wx-1]]></MsgId><FromUserName><![CDATA[user-1]]></FromUserName><ToUserName><![CDATA[corp-1]]></ToUserName><ChatId><![CDATA[chat-1]]></ChatId><Content><![CDATA[hello]]></Content></xml>', encodingAesKey, receiveId, Buffer.alloc(16, 3));
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { channels: { webhookSecrets: { wecom: token }, webhookEncryptionKeys: { wecom: encodingAesKey }, webhookReceiveIds: { wecom: receiveId } } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/channels/wecom/webhook?timestamp=${timestamp}&nonce=${nonce}&msg_signature=${signWecomCallback(token, timestamp, nonce, encrypted)}`, { method: 'POST', headers: { 'content-type': 'application/xml' }, body: `<xml><ToUserName><![CDATA[${receiveId}]]></ToUserName><Encrypt><![CDATA[${encrypted}]]></Encrypt></xml>` });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('application/xml');
+      expect(parseWecomEncryptedInbound(await response.text(), encodingAesKey, receiveId)).toMatchObject({ ToUserName: 'user-1', FromUserName: receiveId, Content: '已收到，任务已进入处理队列。' });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('delivers outbound messages through a configured connector', async () => {
     const deliveries: unknown[] = [];
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { channels: { connectors: { feishu: { send: async (message, payload) => { deliveries.push({ message, payload }); return { statusCode: 200, attempts: 1 }; } } } } });
@@ -122,6 +160,37 @@ describe('gateway', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
+  it('supports asynchronous device or OIDC token verification', async () => {
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { tokenVerifier: async (token) => token === 'device-token' });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    try {
+      expect((await fetch(`http://127.0.0.1:${address.port}/tasks`)).status).toBe(401);
+      expect((await fetch(`http://127.0.0.1:${address.port}/tasks`, { headers: { authorization: 'Bearer device-token' } })).status).toBe(200);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('rejects a validly signed token after its device is revoked', async () => {
+    const store = new InMemoryDeviceIdentityStore();
+    const pairing = new DevicePairingService(store);
+    const device = pairing.redeem(pairing.create('test-device').code, 'device-test');
+    const tokens = new SignedAccessTokenService('12345678901234567890123456789012');
+    const verifier = new DeviceTokenVerifier(tokens, store);
+    const token = tokens.issue(device, 300);
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { tokenVerifier: async (candidate) => Boolean(verifier.verify(candidate)) });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    try {
+      expect((await fetch(`http://127.0.0.1:${address.port}/tasks`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+      pairing.revoke(device.id);
+      expect((await fetch(`http://127.0.0.1:${address.port}/tasks`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('protects remote-capable routes with a bearer token', async () => {
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { bearerToken: 'secret' });
     const address = server.address();

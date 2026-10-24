@@ -26,6 +26,9 @@ importers:
       '@agentcorps/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@agentcorps/channels':
+        specifier: workspace:*
+        version: link:../../packages/channels
       '@agentcorps/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -38,6 +41,9 @@ importers:
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@agentcorps/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@agentcorps/session':
         specifier: workspace:*
         version: link:../../packages/session
@@ -55,12 +61,18 @@ importers:
       '@agentcorps/domain':
         specifier: workspace:*
         version: link:../domain
+      '@agentcorps/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@agentcorps/protocols':
         specifier: workspace:*
         version: link:../protocols
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../runtime
+      '@agentcorps/security':
+        specifier: workspace:*
+        version: link:../security
 
   packages/channels: {}
 

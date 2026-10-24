@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { InMemoryMemoryStore, MemoryService } from '@agentcorps/memory';
 import type { TaskId } from '@agentcorps/domain';
 import type { AgentRequest } from './index.js';
-import { TaskRuntime } from './index.js';
+import { TaskRuntime, ApprovalRequiredError } from './index.js';
 
 describe('TaskRuntime', () => {
   it('creates, executes, projects, and streams a task', async () => {
@@ -23,6 +23,17 @@ describe('TaskRuntime', () => {
     expect(result.status).toBe('succeeded');
     expect(events).toEqual(['task.created', 'task.status_changed', 'run.started', 'run.output', 'task.status_changed']);
     expect(runtime.getTask(task.id)?.status).toBe('succeeded');
+  });
+
+  it('moves a task to waiting_approval for a guarded tool execution', async () => {
+    const runtime = new TaskRuntime({ id: (prefix) => `${prefix}-approval`, now: () => '2026-10-24T00:00:00.000Z' });
+    const task = runtime.createTask({ workspaceId: 'ws', sessionId: 's', title: 'Approval', objective: 'run guarded tool', mode: 'code' });
+    const result = await runtime.runTask(task.id, {
+      descriptor: { id: 'tool-agent', displayName: 'Tool Agent', version: '1', transport: 'stdio-jsonl', capabilities: [] },
+      async execute() { throw new ApprovalRequiredError('approval-1'); },
+    });
+    expect(result.status).toBe('waiting_approval');
+    expect(runtime.store.list(task.id).at(-1)).toMatchObject({ type: 'task.status_changed', payload: { to: 'waiting_approval', reason: 'Tool execution requires approval: approval-1' } });
   });
 
   it('records protocol events emitted by an agent adapter', async () => {

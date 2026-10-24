@@ -5,6 +5,7 @@ export interface A2AAgentCard {
   readonly description?: string;
   readonly url: string;
   readonly version?: string;
+  readonly protocolVersion?: string;
   readonly capabilities?: Record<string, unknown>;
 }
 
@@ -25,6 +26,19 @@ export class A2AProtocolError extends Error {
 export interface A2ARequestOptions {
   readonly signal?: AbortSignal;
   readonly idempotencyKey?: string;
+  readonly reconnectAttempts?: number;
+}
+
+export interface A2AStreamEvent {
+  readonly event?: string;
+  readonly id?: string;
+  readonly data: unknown;
+}
+
+export interface A2ATrustPolicy {
+  readonly requireHttps?: boolean;
+  readonly allowedOrigins?: readonly string[];
+  readonly verifyAgentCard?: (card: unknown) => void | Promise<void>;
 }
 
 export interface A2AClientOptions {
@@ -32,6 +46,9 @@ export interface A2AClientOptions {
   readonly bearerToken?: string;
   readonly timeoutMs?: number;
   readonly fetchImpl?: typeof fetch;
+  readonly requiredCapabilities?: readonly string[];
+  readonly requiredProtocolVersion?: string;
+  readonly trust?: A2ATrustPolicy;
 }
 
 export class A2AClient {
@@ -48,7 +65,65 @@ export class A2AClient {
     const response = await this.fetchImpl(new URL('/.well-known/agent-card.json', this.options.agentUrl), { headers: this.headers(), signal: AbortSignal.timeout(this.options.timeoutMs ?? 30_000) });
     if (!response.ok) throw new A2AProtocolError('agent-card', response.status, `HTTP ${response.status}`);
     const card = await response.json() as unknown;
-    return validateAgentCard(card);
+    const validated = validateAgentCard(card);
+    const remote = new URL(validated.url);
+    if (this.options.trust?.requireHttps && remote.protocol !== 'https:') throw new A2AProtocolError('agent-card', 'untrusted_transport', 'Agent Card URL must use HTTPS');
+    if (this.options.trust?.allowedOrigins && !this.options.trust.allowedOrigins.includes(remote.origin)) throw new A2AProtocolError('agent-card', 'untrusted_origin', `Agent Card origin is not trusted: ${remote.origin}`);
+    await this.options.trust?.verifyAgentCard?.(card);
+    if (this.options.requiredProtocolVersion && validated.protocolVersion !== this.options.requiredProtocolVersion) throw new A2AProtocolError('agent-card', 'protocol_mismatch', `Agent Card protocol version ${validated.protocolVersion ?? '<missing>'} does not satisfy ${this.options.requiredProtocolVersion}`);
+    for (const capability of this.options.requiredCapabilities ?? []) if (!validated.capabilities?.[capability]) throw new A2AProtocolError('agent-card', 'missing_capability', `Agent Card does not advertise capability: ${capability}`);
+    return validated;
+  }
+
+  async *streamMessage(text: string, contextId?: string, requestOptions: A2ARequestOptions = {}): AsyncGenerator<A2AStreamEvent> {
+    if (!text.trim()) throw new Error('A2A message cannot be empty');
+    const body = JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method: 'message/stream', params: { message: { messageId: `agentcorps-${crypto.randomUUID()}`, role: 'user', parts: [{ kind: 'text', text }] }, ...(contextId ? { contextId } : {}) } });
+    const maxReconnects = requestOptions.reconnectAttempts ?? 2;
+    if (!Number.isInteger(maxReconnects) || maxReconnects < 0) throw new Error('A2A reconnectAttempts must be a non-negative integer');
+    let lastEventId: string | undefined;
+    const seenIds = new Set<string>();
+    for (let attempt = 0; attempt <= maxReconnects; attempt += 1) {
+      try {
+        const response = await this.fetchImpl(this.options.agentUrl, {
+          method: 'POST',
+          headers: { ...this.headers(), ...(requestOptions.idempotencyKey ? { 'idempotency-key': requestOptions.idempotencyKey } : {}), ...(lastEventId ? { 'last-event-id': lastEventId } : {}), accept: 'text/event-stream', 'content-type': 'application/json' },
+          signal: requestSignal(this.options.timeoutMs ?? 30_000, requestOptions.signal),
+          body,
+        });
+        if (!response.ok) throw new A2AProtocolError('message/stream', response.status, `HTTP ${response.status}`);
+        if (!response.body) throw new A2AProtocolError('message/stream', 'missing_body', 'Response has no event stream body');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const chunk = await reader.read();
+          buffer += decoder.decode(chunk.value ?? new Uint8Array(), { stream: !chunk.done });
+          const frames = buffer.split(/\r?\n\r?\n/);
+          buffer = frames.pop() ?? '';
+          for (const frame of frames) {
+            const event = parseSseFrame(frame);
+            if (!event) continue;
+            if (event.id) lastEventId = event.id;
+            if (event.id && seenIds.has(event.id)) continue;
+            if (event.id) seenIds.add(event.id);
+            if (isRecord(event.data) && event.data.error) {
+              const error = event.data.error as Record<string, unknown>;
+              throw new A2AProtocolError('message/stream', String(error.code ?? 'stream_error'), String(error.message ?? 'Stream returned an error'), error.data);
+            }
+            yield event;
+          }
+          if (chunk.done) {
+            if (buffer.trim()) {
+              const event = parseSseFrame(buffer);
+              if (event) yield event;
+            }
+            return;
+          }
+        }
+      } catch (error) {
+        if (requestOptions.signal?.aborted || attempt >= maxReconnects) throw error;
+      }
+    }
   }
 
   async sendMessage(text: string, contextId?: string, requestOptions: A2ARequestOptions = {}): Promise<A2ATaskResponse> {
@@ -82,6 +157,28 @@ export class A2AClient {
   }
 }
 
+function parseSseFrame(frame: string): A2AStreamEvent | undefined {
+  let event: string | undefined;
+  let id: string | undefined;
+  const dataLines: string[] = [];
+  for (const line of frame.split(/\r?\n/)) {
+    if (!line || line.startsWith(':')) continue;
+    const separator = line.indexOf(':');
+    const field = separator >= 0 ? line.slice(0, separator) : line;
+    const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, '') : '';
+    if (field === 'event') event = value;
+    else if (field === 'id') id = value;
+    else if (field === 'data') dataLines.push(value);
+  }
+  if (!dataLines.length) return undefined;
+  const raw = dataLines.join('\n');
+  let data: unknown;
+  try { data = JSON.parse(raw) as unknown; } catch { data = raw; }
+  return { ...(event ? { event } : {}), ...(id ? { id } : {}), data };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
+
 function validateAgentCard(value: unknown): A2AAgentCard {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new A2AProtocolError('agent-card', 'invalid_card', 'Agent Card must be an object');
   const card = value as Record<string, unknown>;
@@ -92,6 +189,7 @@ function validateAgentCard(value: unknown): A2AAgentCard {
     url: card.url,
     ...(typeof card.description === 'string' ? { description: card.description } : {}),
     ...(typeof card.version === 'string' ? { version: card.version } : {}),
+    ...(typeof card.protocolVersion === 'string' ? { protocolVersion: card.protocolVersion } : {}),
     ...(card.capabilities && typeof card.capabilities === 'object' && !Array.isArray(card.capabilities) ? { capabilities: card.capabilities as Record<string, unknown> } : {}),
   };
 }
@@ -128,6 +226,8 @@ export interface AcpClientOptions {
   readonly clientVersion?: string;
   readonly onUpdate?: (params: unknown) => void;
   readonly onRequest?: (method: string, params: unknown) => unknown | Promise<unknown>;
+  readonly requiredProtocolVersion?: number;
+  readonly requiredCapabilities?: readonly string[];
 }
 
 interface AcpRpcMessage {
@@ -141,7 +241,7 @@ interface AcpRpcMessage {
 
 export class AcpStdioClient {
   private readonly options: AcpClientOptions;
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; cleanup?: () => void }>();
   private process: ChildProcessWithoutNullStreams | undefined;
   private nextId = 1;
   private initialized = false;
@@ -157,6 +257,8 @@ export class AcpStdioClient {
       clientCapabilities: {},
       clientInfo: { name: this.options.clientName ?? 'AgentCorps', version: this.options.clientVersion ?? '0.1.0' },
     }) as AcpInitializeResult;
+    if (this.options.requiredProtocolVersion !== undefined && result.protocolVersion !== this.options.requiredProtocolVersion) throw new Error(`ACP protocol version ${result.protocolVersion} does not satisfy required version ${this.options.requiredProtocolVersion}`);
+    for (const capability of this.options.requiredCapabilities ?? []) if (!result.agentCapabilities?.[capability]) throw new Error(`ACP agent does not advertise capability: ${capability}`);
     this.initialized = true;
     return result;
   }
@@ -167,10 +269,10 @@ export class AcpStdioClient {
     return await this.request('session/new', { cwd, mcpServers }) as AcpSessionResult;
   }
 
-  async prompt(sessionId: string, text: string): Promise<AcpPromptResult> {
+  async prompt(sessionId: string, text: string, signal?: AbortSignal): Promise<AcpPromptResult> {
     if (!this.initialized) throw new Error('ACP client is not initialized');
     if (!sessionId.trim() || !text.trim()) throw new Error('ACP prompt requires sessionId and text');
-    return await this.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }) as AcpPromptResult;
+    return await this.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }, signal, () => this.cancel(sessionId)) as AcpPromptResult;
   }
 
   cancel(sessionId: string): void {
@@ -194,12 +296,22 @@ export class AcpStdioClient {
     this.process.on('close', (code, signal) => this.rejectPending(new Error(`ACP agent exited (code=${code ?? 'null'}, signal=${signal ?? 'none'})`)));
   }
 
-  private request(method: string, params: unknown): Promise<unknown> {
+  private request(method: string, params: unknown, signal?: AbortSignal, onAbort?: () => void): Promise<unknown> {
     const id = this.nextId++;
     const timeoutMs = this.options.timeoutMs ?? 30_000;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`ACP request timed out: ${method}`)); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      const timer = setTimeout(() => { this.pending.delete(id); cleanup(); reject(new Error(`ACP request timed out: ${method}`)); }, timeoutMs);
+      const abort = () => {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        cleanup();
+        try { onAbort?.(); } catch { /* the request is already being aborted */ }
+        reject(new Error(`ACP request aborted: ${method}`));
+      };
+      const cleanup = () => signal?.removeEventListener('abort', abort);
+      if (signal?.aborted) return abort();
+      signal?.addEventListener('abort', abort, { once: true });
+      this.pending.set(id, { resolve, reject, timer, cleanup });
       this.send({ jsonrpc: '2.0', id, method, params });
     });
   }
@@ -217,6 +329,7 @@ export class AcpStdioClient {
       if (!pending) return;
       this.pending.delete(message.id);
       clearTimeout(pending.timer);
+      pending.cleanup?.();
       if (message.error) pending.reject(new Error(`ACP ${message.error.code}: ${message.error.message}`));
       else pending.resolve(message.result);
       return;
@@ -234,6 +347,7 @@ export class AcpStdioClient {
   private rejectPending(error: Error): void {
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
+      pending.cleanup?.();
       pending.reject(error);
       this.pending.delete(id);
     }
