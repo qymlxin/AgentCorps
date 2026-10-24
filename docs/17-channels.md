@@ -6,7 +6,7 @@
 
 `packages/channels` 将飞书、钉钉、企业微信和自研 App 的 webhook 输入归一化为 `InboundMessage`。飞书事件、钉钉机器人消息和企业微信明文消息现在有独立适配器；平台回调签名算法和消息格式均有本地 fixture。企业微信加密 XML 的 AES 解密、平台回调响应和真实账号探测仍属于部署前验证项。
 
-渠道入站去重、会话映射和投递状态可以通过 `SqliteChannelStateStore` 持久化；默认内存实现仅适合开发和测试。
+渠道入站去重、会话映射和投递状态可以通过 `SqliteChannelStateStore` 持久化；默认内存实现仅适合开发和测试。HTTP connector 支持平台响应校验器；飞书 `code`、钉钉/企业微信 `errcode` 非零时会作为业务错误失败，即使 HTTP 状态是 200。
 
 ## 安全基线
 

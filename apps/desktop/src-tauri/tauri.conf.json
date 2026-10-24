@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AgentCorps",
+  "version": "0.1.0",
+  "identifier": "com.agentcorps.desktop",
+  "build": {
+    "beforeDevCommand": "python3 -m http.server 4173 --directory ../console",
+    "devUrl": "http://127.0.0.1:4173",
+    "frontendDist": "../../console"
+  },
+  "app": {
+    "windows": [
+      { "title": "AgentCorps / Signal Room", "width": 1440, "height": 900, "minWidth": 960, "minHeight": 640 }
+    ],
+    "security": { "csp": "default-src 'self' http://127.0.0.1:43210; connect-src 'self' http://127.0.0.1:43210 ws://127.0.0.1:43210; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'" }
+  },
+  "bundle": { "active": true, "targets": "all" }
+}

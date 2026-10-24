@@ -1,6 +1,29 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { ChannelAdapter, ChannelKind, InboundMessage, OutboundMessage } from './index.js';
 
+export class PlatformApiError extends Error {
+  constructor(readonly provider: ChannelKind, readonly code: number | string, message: string, readonly details?: unknown) {
+    super(`${provider} API error ${code}: ${message}`);
+    this.name = 'PlatformApiError';
+  }
+}
+
+export function platformResponseValidator(channel: ChannelKind): (response: Response) => Promise<void> {
+  return async (response) => {
+    const body = await response.clone().json() as unknown;
+    assertPlatformSuccess(channel, body);
+  };
+}
+
+export function assertPlatformSuccess(channel: ChannelKind, body: unknown): void {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return;
+  const value = body as Record<string, unknown>;
+  const code = value.code ?? value.errcode;
+  if (code === undefined || code === 0 || code === '0') return;
+  const message = String(value.msg ?? value.errmsg ?? 'Unknown platform error');
+  throw new PlatformApiError(channel, typeof code === 'number' || typeof code === 'string' ? code : 'unknown', message, body);
+}
+
 export interface FeishuSignatureHeaders {
   readonly timestamp: string;
   readonly nonce: string;

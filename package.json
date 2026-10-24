@@ -8,6 +8,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r build && pnpm -r typecheck",
     "test": "pnpm -r --workspace-concurrency=1 test",
+    "audit:release": "node scripts/release-audit.mjs",
     "dev:cli": "pnpm --filter @agentcorps/cli dev"
   },
   "devDependencies": {

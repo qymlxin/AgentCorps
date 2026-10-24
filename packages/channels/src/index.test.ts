@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDingTalkTokenProvider, createWecomTokenProvider, DingTalkRobotAdapter, FeishuEventAdapter, FeishuTenantTokenProvider, GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, OAuthClientCredentialsTokenProvider, OAuthHttpChannelConnector, signDingTalkCallback, signFeishuEvent, signHmacSha256, signWecomCallback, SpacedRateLimiter, verifyDingTalkCallbackSignature, verifyFeishuEventSignature, verifyHmacSha256, verifyWecomCallbackSignature, WecomMessageAdapter } from './index.js';
+import { createDingTalkTokenProvider, createWecomTokenProvider, DingTalkRobotAdapter, FeishuEventAdapter, FeishuTenantTokenProvider, GenericWebhookAdapter, HttpChannelConnector, MessageDeduplicator, OAuthClientCredentialsTokenProvider, OAuthHttpChannelConnector, PlatformApiError, assertPlatformSuccess, platformResponseValidator, signDingTalkCallback, signFeishuEvent, signHmacSha256, signWecomCallback, SpacedRateLimiter, verifyDingTalkCallbackSignature, verifyFeishuEventSignature, verifyHmacSha256, verifyWecomCallbackSignature, WecomMessageAdapter } from './index.js';
 
 describe('channel adapters', () => {
   it('normalizes a webhook message and formats an outbound reply', () => {
@@ -116,7 +116,7 @@ describe('channel adapters', () => {
   });
 
 
-  it('parses official vendor message fixtures and verifies callback signatures', () => {
+  it('parses official vendor message fixtures and verifies callback signatures', async () => {
     const feishuBody = JSON.stringify({ header: { event_id: 'evt-1' }, event: { message: { message_id: 'om-1', chat_id: 'oc-1', message_type: 'text', content: JSON.stringify({ text: 'hello' }) }, sender: { sender_id: { open_id: 'ou-1' } } } });
     expect(new FeishuEventAdapter().parseInbound(JSON.parse(feishuBody))).toMatchObject({ externalMessageId: 'om-1', externalConversationId: 'oc-1', externalUserId: 'ou-1', text: 'hello' });
     const feishuSignature = signFeishuEvent(feishuBody, '1700000000', 'nonce-1', 'encrypt-key');
@@ -128,8 +128,13 @@ describe('channel adapters', () => {
 
     expect(new WecomMessageAdapter().parseInbound({ MsgId: 'wx-1', FromUserName: 'user-1', ToUserName: 'corp-1', Content: 'hello' })).toMatchObject({ externalMessageId: 'wx-1', externalConversationId: 'corp-1', externalUserId: 'user-1', text: 'hello' });
     const wecomTimestamp = String(Math.floor(Date.now() / 1000));
-    expect(verifyWecomCallbackSignature('wecom-token', wecomTimestamp, 'nonce', 'encrypted', signWecomCallback('wecom-token', wecomTimestamp, 'nonce', 'encrypted'))).toBe(true);
+    expect(() => assertPlatformSuccess('feishu', { code: 99991663, msg: 'tenant access token expired' })).toThrow(PlatformApiError);
+    expect(() => assertPlatformSuccess('dingtalk', { errcode: 40014, errmsg: 'invalid access_token' })).toThrow('dingtalk API error 40014');
+    const connector = new HttpChannelConnector({ endpoint: 'https://vendor.example/send', maxAttempts: 3, validateResponse: platformResponseValidator('wecom'), fetchImpl: async () => new Response(JSON.stringify({ errcode: 81013, errmsg: 'no valid receiver' }), { status: 200 }) });
+    await expect(connector.send({ channel: 'wecom', externalConversationId: 'c1', text: 'hello' }, {})).rejects.toThrow('wecom API error 81013');
   });
+
+
 
 
   it('rejects duplicate messages and verifies signatures', () => {

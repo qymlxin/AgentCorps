@@ -41,6 +41,7 @@ export interface HttpChannelConnectorOptions {
   readonly maxAttempts?: number;
   readonly backoffMs?: number;
   readonly fetchImpl?: typeof fetch;
+  readonly validateResponse?: (response: Response) => Promise<void>;
 }
 
 export class HttpChannelConnector implements ChannelConnector {
@@ -71,7 +72,10 @@ export class HttpChannelConnector implements ChannelConnector {
         await delay(backoffMs * attempt);
         continue;
       }
-      if (response.ok) return { statusCode: response.status, attempts: attempt };
+      if (response.ok) {
+        await this.options.validateResponse?.(response);
+        return { statusCode: response.status, attempts: attempt };
+      }
       if (!retryableStatus(response.status) || attempt === maxAttempts) throw new Error(`Channel delivery failed: HTTP ${response.status}`);
       await delay(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs * attempt);
     }

@@ -27,7 +27,9 @@ pnpm --filter @agentcorps/console dev
 - 任务时间线和实时 SSE 更新
 - 新建 code/work 任务，并选择已有会话
 - 本地存储连接配置
-- 移动宽度响应式布局和 PWA manifest
+- 移动宽度响应式布局、PWA manifest 和离线静态 shell 缓存
+- 审批队列状态显示，并在网关允许时提供批准/拒绝操作
+- `apps/desktop` 提供 Tauri 2 桌面壳，复用同一控制台和本地网关；桌面打包仍需要目标机器安装 Xcode/平台构建工具
 
 控制台只是控制面，不执行 Agent 命令；所有任务创建、运行和事件读取都经过网关。远程模式需要网关显式开启令牌和 CORS，控制台不会把令牌写入仓库。
 
