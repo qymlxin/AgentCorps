@@ -1,7 +1,7 @@
 # 渠道网关与共享会话
 
 > 版本：0.1.0  
-> 状态：已实现 webhook 入站、签名校验、消息去重、共享会话和任务创建；真实平台出站 HTTP 发送仍由具体渠道连接器负责。  
+> 状态：已实现 webhook 入站、签名校验、消息去重、共享会话、任务创建和可注入的 HTTP outbound connector；真实平台 OAuth、官方签名/限流协议和持久化渠道状态仍未完成。
 > 更新日期：2026-10-24
 
 ## 1. 功能范围
@@ -45,7 +45,7 @@ x-agentcorps-signature: <hex digest>
 POST /channels/:kind/outbound
 ```
 
-请求至少包含 `conversationId` 和 `text`。接口返回适配器生成的渠道 payload，供具体的飞书、钉钉、企业微信或自研 App HTTP connector 发送。当前 gateway 不直接持有各平台的 access token，也不把平台 API 的发送重试伪装成已完成；发送、限流和平台错误应由后续的 provider connector 实现并写入事件。
+请求至少包含 `conversationId` 和 `text`。没有配置 connector 时，接口返回适配器生成的 payload，状态码为 `200`，表示只完成格式化；配置 `ChannelConnector` 后，gateway 将通过 connector 实际发送，成功返回 `202` 和 `{ "delivered": { "statusCode": 200, "attempts": 1 } }` 形式的投递结果。内置 `HttpChannelConnector` 支持自定义 endpoint、headers、超时、网络错误重试，以及 `408`、`429` 和 `5xx` 的退避重试，并遵守 `Retry-After`。它不负责平台 OAuth token 获取，也不把 HTTP 成功伪装成平台业务成功。
 
 ### 渠道状态
 

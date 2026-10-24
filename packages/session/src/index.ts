@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -31,6 +32,116 @@ export interface SessionStore {
   getSession(id: string): Session | undefined;
   listSessions(): readonly Session[];
   listMessages(sessionId: string): readonly SessionMessage[];
+}
+
+interface SqliteStatement {
+  run(...parameters: unknown[]): unknown;
+  all(...parameters: unknown[]): unknown[];
+}
+
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
+const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+
+export class SqliteSessionStore implements SessionStore {
+  private readonly db: SqliteDatabase;
+
+  constructor(filePath: string) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    this.db = new DatabaseSync(filePath);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        archived_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS session_messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        agent_id TEXT,
+        task_id TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS session_messages_session_idx ON session_messages (session_id, created_at, id);
+    `);
+  }
+
+  saveSession(session: Session): void {
+    this.db.prepare(`
+      INSERT INTO sessions (id, workspace_id, title, mode, created_at, updated_at, archived_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, title = excluded.title,
+        mode = excluded.mode, created_at = excluded.created_at, updated_at = excluded.updated_at,
+        archived_at = excluded.archived_at
+    `).run(session.id, session.workspaceId, session.title, session.mode, session.createdAt, session.updatedAt, session.archivedAt ?? null);
+  }
+
+  saveMessage(message: SessionMessage): void {
+    this.db.prepare(`
+      INSERT INTO session_messages (id, session_id, role, content, agent_id, task_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id, role = excluded.role,
+        content = excluded.content, agent_id = excluded.agent_id, task_id = excluded.task_id,
+        created_at = excluded.created_at
+    `).run(message.id, message.sessionId, message.role, message.content, message.agentId ?? null, message.taskId ?? null, message.createdAt);
+  }
+
+  archiveSession(id: string, archivedAt: string): Session | undefined {
+    const current = this.getSession(id);
+    if (!current || current.archivedAt) return undefined;
+    const session = { ...current, archivedAt, updatedAt: archivedAt };
+    this.saveSession(session);
+    return session;
+  }
+
+  getSession(id: string): Session | undefined {
+    const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').all(id)[0];
+    return row ? sessionFromRow(row as Record<string, unknown>) : undefined;
+  }
+
+  listSessions(): readonly Session[] {
+    return this.db.prepare('SELECT * FROM sessions ORDER BY created_at, id').all().map((row) => sessionFromRow(row as Record<string, unknown>));
+  }
+
+  listMessages(sessionId: string): readonly SessionMessage[] {
+    return this.db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at, id').all(sessionId).map((row) => messageFromRow(row as Record<string, unknown>));
+  }
+
+  close(): void { this.db.close(); }
+}
+
+function sessionFromRow(row: Record<string, unknown>): Session {
+  return {
+    id: String(row.id), workspaceId: String(row.workspace_id), title: String(row.title), mode: row.mode as SessionMode,
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    ...(row.archived_at ? { archivedAt: String(row.archived_at) } : {}),
+  };
+}
+
+function messageFromRow(row: Record<string, unknown>): SessionMessage {
+  return {
+    id: String(row.id), sessionId: String(row.session_id), role: row.role as MessageRole, content: String(row.content),
+    ...(row.agent_id ? { agentId: String(row.agent_id) } : {}), ...(row.task_id ? { taskId: String(row.task_id) } : {}),
+    createdAt: String(row.created_at),
+  };
+}
+
+export function migrateSessionStore(source: SessionStore, target: SessionStore): number {
+  const sessions = source.listSessions();
+  for (const session of sessions) target.saveSession(session);
+  let count = sessions.length;
+  for (const session of sessions) for (const message of source.listMessages(session.id)) { target.saveMessage(message); count += 1; }
+  return count;
 }
 
 interface Operation {

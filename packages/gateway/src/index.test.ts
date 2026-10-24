@@ -72,6 +72,20 @@ describe('gateway', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
+  it('delivers outbound messages through a configured connector', async () => {
+    const deliveries: unknown[] = [];
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { channels: { connectors: { feishu: { send: async (message, payload) => { deliveries.push({ message, payload }); return { statusCode: 200, attempts: 1 }; } } } } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/channels/feishu/outbound`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ conversationId: 'c1', text: 'delivered' }) });
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ delivered: { statusCode: 200, attempts: 1 } });
+      expect(deliveries).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
   it('persists, searches, and deletes scoped memories through the gateway', async () => {
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { memory: { allowSensitiveSearch: true } });
     const address = server.address();

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { ApprovalService, createDefaultProfile, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine } from './index.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ApprovalService, createDefaultProfile, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, SqliteApprovalStore, SqliteAuditLog } from './index.js';
 
 describe('PolicyEngine', () => {
   const request = (capability: 'fs.read' | 'fs.write' | 'process.exec' | 'network.connect' | 'secret.read', extra: Record<string, string> = {}) => ({ requestId: `${capability}-1`, taskId: 'task-1', capability, ...extra });
@@ -31,6 +34,30 @@ describe('PolicyEngine', () => {
     expect(approvals.get(expiring.id)?.status).toBe('expired');
     expect(() => approvals.deny(expiring.id, 'user-1')).toThrow('Approval is not pending: expired');
   });
+  it('persists approvals and audit records in SQLite', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-security-sqlite-'));
+    const databasePath = join(directory, 'agentcorps.db');
+    try {
+      const audit = new SqliteAuditLog(databasePath);
+      const engine = new PolicyEngine(audit, () => '2026-10-24T00:00:00.000Z');
+      const context = { mode: 'code' as const, profile: createDefaultProfile('/workspace', 'S2') };
+      const requestValue = request('process.exec', { command: 'pnpm test' });
+      const policy = engine.evaluate(requestValue, context);
+      const approvalStore = new SqliteApprovalStore(databasePath);
+      const approvals = new ApprovalService(approvalStore, () => '2026-10-24T00:00:00.000Z', () => 'approval-sqlite');
+      const created = approvals.create(requestValue, policy, 1_000);
+      expect(approvals.approve(created.id, 'user-1').status).toBe('approved');
+      const reopenedStore = new SqliteApprovalStore(databasePath);
+      expect(new ApprovalService(reopenedStore, () => '2026-10-24T00:00:00.000Z').get(created.id)?.status).toBe('approved');
+      expect(audit.list()).toHaveLength(1);
+      reopenedStore.close();
+      approvalStore.close();
+      audit.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('requires approval for execution, network, secrets, and work-mode writes', () => {
     const engine = new PolicyEngine(new InMemoryAuditLog());
     const code = { mode: 'code' as const, profile: { ...createDefaultProfile('/workspace', 'S2'), network: 'allowlist' as const, allowedHosts: ['api.example.com'] } };

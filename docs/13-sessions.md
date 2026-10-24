@@ -9,7 +9,7 @@
 - 会话关联工作区和工作模式
 - 消息有 `user`、`agent`、`system`、`tool` 角色
 - 消息可以关联 Agent 和任务
-- 会话与消息使用 JSONL 追加日志保存，CLI 进程重新启动后仍可读取
+- 会话与消息使用 SQLite 持久化；旧版 JSONL 存储仍用于迁移和 fixture
 - 会话可以归档；归档后不再接受新消息
 
 ## API 路由
@@ -20,7 +20,7 @@
 - `POST /sessions/:id/messages`：`role`、`content`，可选 `agentId`、`taskId`
 - `POST /sessions/:id/archive`
 
-CLI 启动网关时会在 `--data-dir` 下同时保存 `agentcorps.db` 和 `sessions.jsonl`。桌面端、手机页面、飞书/钉钉/企业微信适配器应只调用这些控制面，不直接写文件。
+CLI 启动网关时会在 `--data-dir` 下使用同一个 `agentcorps.db` 保存任务事件、会话和消息。桌面端、手机页面、飞书/钉钉/企业微信适配器应只调用这些控制面，不直接写文件。
 
 ## 后续工作
 

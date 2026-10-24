@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -45,6 +45,24 @@ describe('CLI', () => {
     expect(result.available).toBe(true);
     expect(result.descriptor.transport).toBe('stdio-jsonl');
     expect(result.descriptor.version).not.toBe('unavailable');
+  });
+
+  it('migrates legacy memory and restores a SQLite backup', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-storage-'));
+    const restored = mkdtempSync(join(tmpdir(), 'agentcorps-cli-restored-'));
+    const backup = join(directory, 'backup', 'agentcorps.db');
+    try {
+      writeFileSync(join(directory, 'memory.jsonl'), JSON.stringify({ op: 'upsert', record: { id: 'memory-legacy', scope: 'global', content: 'legacy memory', source: 'user', confidence: 1, sensitivity: 'private', createdAt: '2026-10-24T00:00:00.000Z', updatedAt: '2026-10-24T00:00:00.000Z' } }) + '\n');
+      const migrated = JSON.parse((await execFileAsync('node', ['dist/index.js', 'data', 'migrate', '--data-dir', directory])).stdout) as { memoryRecords: number };
+      expect(migrated.memoryRecords).toBe(1);
+      await execFileAsync('node', ['dist/index.js', 'data', 'backup', '--data-dir', directory, '--output', backup]);
+      await execFileAsync('node', ['dist/index.js', 'data', 'restore', '--data-dir', restored, '--input', backup]);
+      const memories = JSON.parse((await execFileAsync('node', ['dist/index.js', 'memory', 'list', '--data-dir', restored])).stdout) as Array<{ id: string }>;
+      expect(memories.map((memory) => memory.id)).toContain('memory-legacy');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      rmSync(restored, { recursive: true, force: true });
+    }
   });
 
   it('shares persistent tasks between CLI invocations', async () => {

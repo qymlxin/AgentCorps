@@ -1,12 +1,13 @@
 #!/usr/bin/env node
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, probeAgent, type AgentProbeOptions } from '@agentcorps/adapters';
 import type { AgentAdapter } from '@agentcorps/runtime';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
-import { JsonlMemoryStore, MemoryService } from '@agentcorps/memory';
-import { JsonlSessionStore, SessionService } from '@agentcorps/session';
+import { JsonlMemoryStore, migrateMemoryStore, MemoryService, SqliteMemoryStore } from '@agentcorps/memory';
+import { JsonlSessionStore, migrateSessionStore, SessionService, SqliteSessionStore } from '@agentcorps/session';
 import { MockAgent, SqliteEventStore, TaskRuntime } from '@agentcorps/runtime';
 
 function usage(): never {
@@ -29,7 +30,10 @@ Commands:
   memory search --query Q                 Search visible memory
        [--workspace-id ID] [--session-id ID] [--include-sensitive]
   memory list                              List exported memories
-  memory delete MEMORY_ID                 Soft-delete a memory`);
+  memory delete MEMORY_ID                 Soft-delete a memory
+  data migrate [--data-dir PATH]          Migrate legacy JSONL sessions and memory
+  data backup --output PATH                Copy the SQLite database to a backup file
+  data restore --input PATH                Replace the SQLite database from a backup file`);
   process.exit(1);
 }
 
@@ -92,7 +96,7 @@ function runtime(memory = memoryService()): TaskRuntime {
 }
 
 function memoryService(): MemoryService {
-  return new MemoryService(new JsonlMemoryStore(join(dataDirectory(), 'memory.jsonl')));
+  return new MemoryService(new SqliteMemoryStore(join(dataDirectory(), 'agentcorps.db')));
 }
 
 async function main(): Promise<void> {
@@ -108,6 +112,47 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'data') {
+    const action = process.argv[3];
+    const dataDir = dataDirectory();
+    const databasePath = join(dataDir, 'agentcorps.db');
+    mkdirSync(dataDir, { recursive: true });
+    if (action === 'migrate') {
+      let memoryRecords = 0;
+      let sessionRecords = 0;
+      const legacyMemoryPath = join(dataDir, 'memory.jsonl');
+      if (existsSync(legacyMemoryPath)) {
+        const target = new SqliteMemoryStore(databasePath);
+        memoryRecords = migrateMemoryStore(new JsonlMemoryStore(legacyMemoryPath), target);
+        target.close();
+      }
+      const legacySessionPath = join(dataDir, 'sessions.jsonl');
+      if (existsSync(legacySessionPath)) {
+        const target = new SqliteSessionStore(databasePath);
+        sessionRecords = migrateSessionStore(new JsonlSessionStore(legacySessionPath), target);
+        target.close();
+      }
+      console.log(JSON.stringify({ databasePath, memoryRecords, sessionRecords }, null, 2));
+      return;
+    }
+    if (action === 'backup') {
+      const output = requiredFlag('--output');
+      if (!existsSync(databasePath)) throw new Error(`Database not found: ${databasePath}`);
+      mkdirSync(dirname(output), { recursive: true });
+      copyFileSync(databasePath, output);
+      console.log(JSON.stringify({ source: databasePath, output }));
+      return;
+    }
+    if (action === 'restore') {
+      const input = requiredFlag('--input');
+      if (!existsSync(input)) throw new Error(`Backup not found: ${input}`);
+      copyFileSync(input, databasePath);
+      console.log(JSON.stringify({ input, databasePath }));
+      return;
+    }
+    usage();
+  }
+
   if (command === 'serve') {
     const port = Number(flag('--port') ?? '43210');
     const host = flag('--host') ?? '127.0.0.1';
@@ -117,7 +162,7 @@ async function main(): Promise<void> {
     const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? '*' : undefined);
     const memories = memoryService();
     const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}), memory: { service: memories }, agentFactory: () => agentForRun() };
-    const server = await listenGateway(runtime(memories), port, host, new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))), gatewayOptions);
+    const server = await listenGateway(runtime(memories), port, host, new SessionService(new SqliteSessionStore(join(dataDir, 'agentcorps.db'))), gatewayOptions);
     console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);
     return;
   }

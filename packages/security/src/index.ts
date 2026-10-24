@@ -1,4 +1,19 @@
-import { resolve, relative, isAbsolute } from 'node:path';
+import { createRequire } from 'node:module';
+import { mkdirSync } from 'node:fs';
+import { dirname, resolve, relative, isAbsolute } from 'node:path';
+
+interface SqliteStatement {
+  run(...parameters: unknown[]): unknown;
+  all(...parameters: unknown[]): unknown[];
+}
+
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
+const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
 
 export type SandboxLevel = 'S0' | 'S1' | 'S2' | 'S3' | 'S4';
 export type SecurityDecision = 'allow' | 'approval_required' | 'deny';
@@ -49,6 +64,42 @@ export class InMemoryAuditLog implements AuditLog {
   private readonly records: AuditRecord[] = [];
   append(record: AuditRecord): void { this.records.push(record); }
   list(): readonly AuditRecord[] { return [...this.records]; }
+}
+
+export class SqliteAuditLog implements AuditLog {
+  private readonly db: SqliteDatabase;
+
+  constructor(filePath: string) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    this.db = new DatabaseSync(filePath);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS audit_records_occurred_idx ON audit_records (occurred_at, id);
+    `);
+  }
+
+  append(record: AuditRecord): void {
+    this.db.prepare('INSERT INTO audit_records (request_id, task_id, decision, reason, capability, occurred_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+      record.requestId, record.taskId, record.decision, record.reason, record.capability, record.occurredAt,
+    );
+  }
+
+  list(): readonly AuditRecord[] {
+    return this.db.prepare('SELECT request_id, task_id, decision, reason, capability, occurred_at FROM audit_records ORDER BY occurred_at, id').all().map((row) => {
+      const value = row as Record<string, unknown>;
+      return { requestId: String(value.request_id), taskId: String(value.task_id), decision: value.decision as SecurityDecision, reason: String(value.reason), capability: value.capability as SecurityCapability, occurredAt: String(value.occurred_at) };
+    });
+  }
+
+  close(): void { this.db.close(); }
 }
 
 export class PolicyEngine {
@@ -138,6 +189,62 @@ export class InMemoryApprovalStore implements ApprovalStore {
   save(approval: Approval): void { this.approvals.set(approval.id, approval); }
   get(id: string): Approval | undefined { return this.approvals.get(id); }
   list(): readonly Approval[] { return [...this.approvals.values()]; }
+}
+
+export class SqliteApprovalStore implements ApprovalStore {
+  private readonly db: SqliteDatabase;
+
+  constructor(filePath: string) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    this.db = new DatabaseSync(filePath);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY,
+        request_json TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        decided_at TEXT,
+        decided_by TEXT,
+        decision_reason TEXT
+      );
+      CREATE INDEX IF NOT EXISTS approvals_status_idx ON approvals (status, expires_at);
+    `);
+  }
+
+  save(approval: Approval): void {
+    this.db.prepare(`
+      INSERT INTO approvals (id, request_json, reason, status, created_at, expires_at, decided_at, decided_by, decision_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET request_json = excluded.request_json, reason = excluded.reason,
+        status = excluded.status, created_at = excluded.created_at, expires_at = excluded.expires_at,
+        decided_at = excluded.decided_at, decided_by = excluded.decided_by, decision_reason = excluded.decision_reason
+    `).run(
+      approval.id, JSON.stringify(approval.request), approval.reason, approval.status, approval.createdAt, approval.expiresAt,
+      approval.decidedAt ?? null, approval.decidedBy ?? null, approval.decisionReason ?? null,
+    );
+  }
+
+  get(id: string): Approval | undefined {
+    const row = this.db.prepare('SELECT * FROM approvals WHERE id = ?').all(id)[0];
+    return row ? approvalFromRow(row as Record<string, unknown>) : undefined;
+  }
+
+  list(): readonly Approval[] {
+    return this.db.prepare('SELECT * FROM approvals ORDER BY created_at, id').all().map((row) => approvalFromRow(row as Record<string, unknown>));
+  }
+
+  close(): void { this.db.close(); }
+}
+
+function approvalFromRow(row: Record<string, unknown>): Approval {
+  return {
+    id: String(row.id), request: JSON.parse(String(row.request_json)) as ToolRequest, reason: String(row.reason), status: row.status as ApprovalStatus,
+    createdAt: String(row.created_at), expiresAt: String(row.expires_at),
+    ...(row.decided_at ? { decidedAt: String(row.decided_at) } : {}), ...(row.decided_by ? { decidedBy: String(row.decided_by) } : {}),
+    ...(row.decision_reason ? { decisionReason: String(row.decision_reason) } : {}),
+  };
 }
 
 export class ApprovalService {

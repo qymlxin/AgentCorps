@@ -1,7 +1,7 @@
 # 记忆访问入口
 
 > 版本：0.1.0  
-> 状态：Gateway 和 CLI 已接入 MemoryService；默认 Gateway 记忆是进程内存，CLI `serve` 使用数据目录中的 JSONL 持久化。  
+> 状态：Gateway 和 CLI 已接入 MemoryService；默认 Gateway 记忆是进程内存，CLI 使用数据目录中的 SQLite 持久化。JSONL 保留为迁移和导出格式。
 > 更新日期：2026-10-24
 
 ## 1. Gateway 接口
@@ -43,11 +43,11 @@ GET /memory?query=release&workspaceId=workspace-id&sessionId=session-id&limit=10
 DELETE /memory/:memoryId
 ```
 
-删除写入 tombstone，不会从 JSONL 历史中物理擦除，避免备份或恢复过程意外复活已删除内容。
+删除写入 tombstone，不会从 SQLite 记录中物理擦除，避免备份或恢复过程意外复活已删除内容。
 
 ## 2. CLI 接口
 
-CLI 使用 `--data-dir` 指定数据目录，默认是 `~/.agentcorps`。记忆保存在 `memory.jsonl`，与 SQLite 任务事件和 Session 文件分开，便于迁移与审阅。
+CLI 使用 `--data-dir` 指定数据目录，默认是 `~/.agentcorps`。记忆保存在该目录的 `agentcorps.db`，与任务事件、Session 和消息共享数据库；旧版本的 `memory.jsonl` 可以通过 `migrateMemoryStore` 迁移。
 
 ```bash
 agentcorps memory save \
@@ -70,7 +70,7 @@ agentcorps memory delete MEMORY_ID
 
 `memory search` 默认隐藏秘密记忆；仅在本机明确使用 `--include-sensitive` 时才请求包含它们。
 
-启动 CLI Gateway 时，会把同一个数据目录中的 `memory.jsonl` 注入 Gateway：
+启动 CLI Gateway 时，会把同一个数据目录中的 `agentcorps.db` 注入 Gateway：
 
 ```bash
 agentcorps serve --data-dir ~/.agentcorps
@@ -86,6 +86,6 @@ agentcorps serve --data-dir ~/.agentcorps
 - `CommandAgentAdapter` 将同一 context 区段放入命令参数或 stdin prompt。
 - context 区段会标注为不可信参考资料，Agent 不应把其中内容当作指令。
 
-CLI 的 `task run` 和 `serve` 使用数据目录中的同一个 `memory.jsonl`，因此通过 CLI 保存的记忆会参与后续本地任务运行时检索。Gateway 的 `/memory` 路由与其他远程路由一样受 Bearer token 配置保护；远程敏感记忆检索仍需显式配置 `allowSensitiveSearch` 和 `includeSensitive=true`，这不会改变任务运行时默认排除 secret 的规则。
+CLI 的 `task run` 和 `serve` 使用数据目录中的同一个 SQLite 数据库，因此通过 CLI 保存的记忆会参与后续本地任务运行时检索。Gateway 的 `/memory` 路由与其他远程路由一样受 Bearer token 配置保护；远程敏感记忆检索仍需显式配置 `allowSensitiveSearch` 和 `includeSensitive=true`，这不会改变任务运行时默认排除 secret 的规则。
 
-记忆敏感度不是加密机制；秘密内容仍需要系统密钥链、文件权限和备份保护。默认 Gateway 的内存存储适合测试；长期运行使用 CLI 的 `serve` 以启用 JSONL 持久化。当前检索是关键词匹配，后续可以在保持 `MemoryService` 接口不变的前提下增加 SQLite FTS5 或本地向量索引。
+记忆敏感度不是加密机制；秘密内容仍需要系统密钥链、文件权限和备份保护。默认 Gateway 的内存存储适合测试；长期运行使用 CLI 的 `serve` 以启用 SQLite 持久化。当前检索是关键词匹配，后续可以在保持 `MemoryService` 接口不变的前提下增加 SQLite FTS5 或本地向量索引。

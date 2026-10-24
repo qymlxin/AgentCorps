@@ -25,6 +25,80 @@ export interface ChannelAdapter {
   formatOutbound(message: OutboundMessage): unknown;
 }
 
+export interface ChannelConnector {
+  send(message: OutboundMessage, payload: unknown): Promise<ChannelDeliveryResult>;
+}
+
+export interface ChannelDeliveryResult {
+  readonly statusCode: number;
+  readonly attempts: number;
+}
+
+export interface HttpChannelConnectorOptions {
+  readonly endpoint: string | ((message: OutboundMessage) => string);
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+  readonly maxAttempts?: number;
+  readonly backoffMs?: number;
+  readonly fetchImpl?: typeof fetch;
+}
+
+export class HttpChannelConnector implements ChannelConnector {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(private readonly options: HttpChannelConnectorOptions) {
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async send(message: OutboundMessage, payload: unknown): Promise<ChannelDeliveryResult> {
+    const maxAttempts = positiveInteger(this.options.maxAttempts, 3);
+    const timeoutMs = positiveInteger(this.options.timeoutMs, 10_000);
+    const backoffMs = positiveInteger(this.options.backoffMs, 100);
+    const endpoint = typeof this.options.endpoint === 'function' ? this.options.endpoint(message) : this.options.endpoint;
+    let lastError: Error | undefined;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...this.options.headers },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (attempt === maxAttempts) throw lastError;
+        await delay(backoffMs * attempt);
+        continue;
+      }
+      if (response.ok) return { statusCode: response.status, attempts: attempt };
+      if (!retryableStatus(response.status) || attempt === maxAttempts) throw new Error(`Channel delivery failed: HTTP ${response.status}`);
+      await delay(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs * attempt);
+    }
+    throw lastError ?? new Error('Channel delivery failed');
+  }
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isInteger(value) && value! > 0 ? value! : fallback;
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function retryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, date - Date.now());
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
 export class GenericWebhookAdapter implements ChannelAdapter {
   constructor(readonly kind: ChannelKind) {}
 

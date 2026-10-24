@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -48,6 +49,106 @@ export interface MemoryStore {
   delete(id: string, deletedAt: string): MemoryRecord | undefined;
   get(id: string): MemoryRecord | undefined;
   list(): readonly MemoryRecord[];
+}
+
+interface SqliteStatement {
+  run(...parameters: unknown[]): unknown;
+  all(...parameters: unknown[]): unknown[];
+}
+
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
+const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+
+export class SqliteMemoryStore implements MemoryStore {
+  private readonly db: SqliteDatabase;
+
+  constructor(filePath: string) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    this.db = new DatabaseSync(filePath);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memories (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        workspace_id TEXT,
+        session_id TEXT,
+        content TEXT NOT NULL,
+        source_event_id TEXT,
+        source TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        sensitivity TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        expires_at TEXT,
+        deleted_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS memories_scope_idx ON memories (scope, workspace_id, session_id);
+      CREATE INDEX IF NOT EXISTS memories_updated_idx ON memories (updated_at);
+    `);
+  }
+
+  upsert(record: MemoryRecord): void {
+    this.db.prepare(`
+      INSERT INTO memories (id, scope, workspace_id, session_id, content, source_event_id, source, confidence, sensitivity, created_at, updated_at, expires_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        scope = excluded.scope, workspace_id = excluded.workspace_id, session_id = excluded.session_id,
+        content = excluded.content, source_event_id = excluded.source_event_id, source = excluded.source,
+        confidence = excluded.confidence, sensitivity = excluded.sensitivity, created_at = excluded.created_at,
+        updated_at = excluded.updated_at, expires_at = excluded.expires_at, deleted_at = excluded.deleted_at
+    `).run(
+      record.id, record.scope, record.workspaceId ?? null, record.sessionId ?? null, record.content,
+      record.sourceEventId ?? null, record.source, record.confidence, record.sensitivity, record.createdAt,
+      record.updatedAt, record.expiresAt ?? null, record.deletedAt ?? null,
+    );
+  }
+
+  delete(id: string, deletedAt: string): MemoryRecord | undefined {
+    const current = this.get(id);
+    if (!current || current.deletedAt) return undefined;
+    const record = { ...current, deletedAt, updatedAt: deletedAt };
+    this.upsert(record);
+    return record;
+  }
+
+  get(id: string): MemoryRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM memories WHERE id = ?').all(id)[0];
+    return row ? memoryFromRow(row as Record<string, unknown>) : undefined;
+  }
+
+  list(): readonly MemoryRecord[] {
+    return this.db.prepare('SELECT * FROM memories ORDER BY created_at, id').all().map((row) => memoryFromRow(row as Record<string, unknown>));
+  }
+
+  close(): void { this.db.close(); }
+}
+
+function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
+  return {
+    id: String(row.id),
+    scope: row.scope as MemoryScope,
+    ...(row.workspace_id ? { workspaceId: String(row.workspace_id) } : {}),
+    ...(row.session_id ? { sessionId: String(row.session_id) } : {}),
+    content: String(row.content),
+    ...(row.source_event_id ? { sourceEventId: String(row.source_event_id) } : {}),
+    source: row.source as MemoryRecord['source'],
+    confidence: Number(row.confidence),
+    sensitivity: row.sensitivity as MemorySensitivity,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    ...(row.expires_at ? { expiresAt: String(row.expires_at) } : {}),
+    ...(row.deleted_at ? { deletedAt: String(row.deleted_at) } : {}),
+  };
+}
+
+export function migrateMemoryStore(source: MemoryStore, target: MemoryStore): number {
+  const records = source.list();
+  for (const record of records) target.upsert(record);
+  return records.length;
 }
 
 export class JsonlMemoryStore implements MemoryStore {

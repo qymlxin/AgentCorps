@@ -9,6 +9,7 @@ import {
   MessageDeduplicator,
   verifyHmacSha256,
   type ChannelAdapter,
+  type ChannelConnector,
   type ChannelKind,
   type InboundMessage,
   type OutboundMessage,
@@ -95,6 +96,7 @@ function messageRole(value: unknown): MessageRole {
 
 export interface ChannelGatewayOptions {
   readonly adapters?: Partial<Record<ChannelKind, ChannelAdapter>>;
+  readonly connectors?: Partial<Record<ChannelKind, ChannelConnector>>;
   readonly webhookSecrets?: Partial<Record<ChannelKind, string>>;
   readonly defaultMode?: SessionMode;
   readonly workspaceId?: string;
@@ -202,7 +204,10 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
             ...(body.replyToExternalMessageId ? { replyToExternalMessageId: String(body.replyToExternalMessageId) } : {}),
           };
           if (!outbound.externalConversationId || !outbound.text.trim()) throw new Error('Outbound channel message requires conversation and text');
-          return sendJson(response, 200, { channel: kind, payload: adapter.formatOutbound(outbound) });
+          const payload = adapter.formatOutbound(outbound);
+          const connector = options.channels?.connectors?.[kind];
+          if (connector) return sendJson(response, 202, { channel: kind, delivered: await connector.send(outbound, payload), payload });
+          return sendJson(response, 200, { channel: kind, payload });
         }
         const inbound = adapter.parseInbound(body);
         if (!deduplicator.accept(inbound)) return sendJson(response, 200, { accepted: false, duplicate: true, externalMessageId: inbound.externalMessageId });
