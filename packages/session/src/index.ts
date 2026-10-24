@@ -46,7 +46,7 @@ export class JsonlSessionStore implements SessionStore {
   constructor(private readonly filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     if (!existsSync(filePath)) return;
-    for (const line of readFileSync(filePath, 'utf8').split('\\n').filter(Boolean)) this.apply(JSON.parse(line) as Operation);
+    for (const line of readFileSync(filePath, 'utf8').split('\n').filter(Boolean)) this.apply(JSON.parse(line) as Operation);
   }
 
   saveSession(session: Session): void { this.append({ op: 'session', session }); this.apply({ op: 'session', session }); }
@@ -63,7 +63,7 @@ export class JsonlSessionStore implements SessionStore {
   listSessions(): readonly Session[] { return [...this.sessions.values()]; }
   listMessages(sessionId: string): readonly SessionMessage[] { return [...(this.messages.get(sessionId) ?? [])]; }
 
-  private append(operation: Operation): void { appendFileSync(this.filePath, `${JSON.stringify(operation)}\\n`, 'utf8'); }
+  private append(operation: Operation): void { appendFileSync(this.filePath, `${JSON.stringify(operation)}\n`, 'utf8'); }
   private apply(operation: Operation): void {
     if (operation.session) this.sessions.set(operation.session.id, operation.session);
     if (operation.message) this.messages.set(operation.message.sessionId, [...(this.messages.get(operation.message.sessionId) ?? []), operation.message]);
