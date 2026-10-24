@@ -10,6 +10,11 @@ import {
   InMemoryChannelStateStore,
   DingTalkRobotAdapter,
   WecomMessageAdapter,
+  parseWecomEncryptedInbound,
+  parseWecomXmlEnvelope,
+  verifyDingTalkCallbackSignature,
+  verifyFeishuEventSignature,
+  verifyWecomCallbackSignature,
   verifyHmacSha256,
   type ChannelAdapter,
   type ChannelConnector,
@@ -102,6 +107,8 @@ export interface ChannelGatewayOptions {
   readonly adapters?: Partial<Record<ChannelKind, ChannelAdapter>>;
   readonly connectors?: Partial<Record<ChannelKind, ChannelConnector>>;
   readonly webhookSecrets?: Partial<Record<ChannelKind, string>>;
+  readonly webhookEncryptionKeys?: Partial<Record<ChannelKind, string>>;
+  readonly webhookReceiveIds?: Partial<Record<ChannelKind, string>>;
   readonly defaultMode?: SessionMode;
   readonly workspaceId?: string;
   readonly sessionIds?: Map<string, string>;
@@ -157,6 +164,10 @@ function setCors(response: ServerResponse, options: GatewayOptions): void {
   response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
 }
 
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function isAuthorized(request: IncomingMessage, options: GatewayOptions): boolean {
   if (!options.bearerToken) return true;
   return request.headers.authorization === `Bearer ${options.bearerToken}`;
@@ -197,15 +208,35 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
         if (!kind) return sendJson(response, 404, { error: 'Unknown channel' });
         const adapter = adapters[kind];
         const rawBody = await readBody(request);
+        const rawText = rawBody.toString('utf8');
         const secret = options.channels?.webhookSecrets?.[kind];
         if (secret && channelPath[2] === 'webhook') {
-          const signatureHeader = request.headers['x-agentcorps-signature'] ?? request.headers['x-signature'];
-          const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
-          if (!signature || !verifyHmacSha256(rawBody.toString('utf8'), signature, secret)) {
-            return sendJson(response, 401, { error: 'Invalid channel signature' });
-          }
+          const larkSignature = headerValue(request.headers['x-lark-signature']);
+          const larkTimestamp = headerValue(request.headers['x-lark-request-timestamp']);
+          const larkNonce = headerValue(request.headers['x-lark-request-nonce']);
+          const dingTimestamp = url.searchParams.get('timestamp');
+          const dingSignature = url.searchParams.get('sign');
+          const wecomSignature = url.searchParams.get('msg_signature');
+          const wecomTimestamp = url.searchParams.get('timestamp');
+          const wecomNonce = url.searchParams.get('nonce');
+          const wecomEncrypted = kind === 'wecom' ? parseWecomXmlEnvelope(rawText).encrypt : undefined;
+          const signatureHeader = headerValue(request.headers['x-agentcorps-signature'] ?? request.headers['x-signature']);
+          const valid = kind === 'feishu' && larkSignature && larkTimestamp && larkNonce
+            ? verifyFeishuEventSignature(rawText, { signature: larkSignature, timestamp: larkTimestamp, nonce: larkNonce }, secret)
+            : kind === 'dingtalk' && dingTimestamp && dingSignature
+              ? verifyDingTalkCallbackSignature(dingTimestamp, dingSignature, secret)
+              : kind === 'wecom' && wecomSignature && wecomTimestamp && wecomNonce && wecomEncrypted
+                ? verifyWecomCallbackSignature(secret, wecomTimestamp, wecomNonce, wecomEncrypted, wecomSignature)
+                : Boolean(signatureHeader && verifyHmacSha256(rawText, signatureHeader, secret));
+          if (!valid) return sendJson(response, 401, { error: 'Invalid channel signature' });
         }
-        const body = parseJsonBody(rawBody);
+        let body: JsonRecord;
+        if (kind === 'wecom' && options.channels?.webhookEncryptionKeys?.[kind]) {
+          body = parseWecomEncryptedInbound(rawText, options.channels.webhookEncryptionKeys[kind]!, options.channels.webhookReceiveIds?.[kind]) as JsonRecord;
+        } else {
+          body = parseJsonBody(rawBody);
+        }
+        if (kind === 'feishu' && typeof body.challenge === 'string') return sendJson(response, 200, { challenge: body.challenge });
         if (channelPath[2] === 'outbound') {
           const outbound: OutboundMessage = {
             channel: kind,

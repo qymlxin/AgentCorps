@@ -22,7 +22,7 @@
 
 ## 2. HTTP 接口
 
-### 入站 webhook
+入站 webhook 支持飞书事件挑战响应、飞书请求头签名、钉钉时间戳/签名参数，以及企业微信 `msg_signature`、加密 XML 和 EncodingAESKey 解密配置。企业微信回调需要在 `ChannelGatewayOptions` 中同时配置 `webhookSecrets` 和 `webhookEncryptionKeys`；部署方还应配置 `webhookReceiveIds` 做接收方校验。
 
 ```text
 POST /channels/feishu/webhook

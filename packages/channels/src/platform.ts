@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { ChannelAdapter, ChannelKind, InboundMessage, OutboundMessage } from './index.js';
 
 export class PlatformApiError extends Error {
@@ -122,6 +122,56 @@ export function verifyWecomCallbackSignature(token: string, timestamp: string, n
   return expected.length === received.length && timingSafeEqual(expected, received);
 }
 
+export interface WecomXmlEnvelope {
+  readonly toUserName?: string;
+  readonly agentId?: string;
+  readonly encrypt?: string;
+  readonly [key: string]: string | undefined;
+}
+
+export interface WecomDecryptedMessage {
+  readonly message: string;
+  readonly receiveId: string;
+}
+
+export function parseWecomXmlEnvelope(xml: string): WecomXmlEnvelope {
+  const values: Record<string, string> = {};
+  for (const match of xml.matchAll(/<(ToUserName|AgentID|Encrypt|MsgId|FromUserName|ChatId|Content)>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/\1>/g)) values[match[1]!] = match[2] ?? match[3] ?? '';
+  return { ...values, ...(values.ToUserName ? { toUserName: values.ToUserName } : {}), ...(values.AgentID ? { agentId: values.AgentID } : {}), ...(values.Encrypt ? { encrypt: values.Encrypt } : {}) };
+}
+
+export function decryptWecomMessage(encrypted: string, encodingAesKey: string, expectedReceiveId?: string): WecomDecryptedMessage {
+  const key = Buffer.from(`${encodingAesKey}=`, 'base64');
+  if (key.byteLength !== 32) throw new Error('WeCom EncodingAESKey must decode to 32 bytes');
+  const decipher = createDecipheriv('aes-256-cbc', key, key.subarray(0, 16));
+  const plaintext = Buffer.concat([decipher.update(Buffer.from(encrypted, 'base64')), decipher.final()]);
+  if (plaintext.byteLength < 20) throw new Error('WeCom encrypted message is too short');
+  const messageLength = plaintext.readUInt32BE(16);
+  const messageEnd = 20 + messageLength;
+  if (messageEnd > plaintext.byteLength) throw new Error('WeCom encrypted message length is invalid');
+  const message = plaintext.subarray(20, messageEnd).toString('utf8');
+  const receiveId = plaintext.subarray(messageEnd).toString('utf8');
+  if (expectedReceiveId !== undefined && receiveId !== expectedReceiveId) throw new Error('WeCom encrypted message receive id does not match');
+  return { message, receiveId };
+}
+
+export function parseWecomEncryptedInbound(xml: string, encodingAesKey: string, expectedReceiveId?: string): WecomMessagePayload {
+  const envelope = parseWecomXmlEnvelope(xml);
+  if (!envelope.encrypt) throw new Error('WeCom callback XML is missing Encrypt');
+  const decrypted = decryptWecomMessage(envelope.encrypt, encodingAesKey, expectedReceiveId);
+  const message = parseWecomXmlEnvelope(decrypted.message);
+  return message as WecomMessagePayload;
+}
+
+export function encryptWecomMessage(message: string, encodingAesKey: string, receiveId: string, random = randomBytes(16)): string {
+  const key = Buffer.from(`${encodingAesKey}=`, 'base64');
+  if (key.byteLength !== 32) throw new Error('WeCom EncodingAESKey must decode to 32 bytes');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(Buffer.byteLength(message, 'utf8'));
+  const plaintext = Buffer.concat([random, length, Buffer.from(message, 'utf8'), Buffer.from(receiveId, 'utf8')]);
+  const cipher = createCipheriv('aes-256-cbc', key, key.subarray(0, 16));
+  return Buffer.concat([cipher.update(plaintext), cipher.final()]).toString('base64');
+}
 export interface WecomMessagePayload {
   readonly MsgId?: string;
   readonly FromUserName?: string;
@@ -129,6 +179,7 @@ export interface WecomMessagePayload {
   readonly ChatId?: string;
   readonly Content?: string;
 }
+
 
 export class WecomMessageAdapter implements ChannelAdapter {
   readonly kind = 'wecom' as const;
