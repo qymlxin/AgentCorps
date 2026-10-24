@@ -72,6 +72,8 @@ importers:
 
   packages/memory: {}
 
+  packages/protocols: {}
+
   packages/runtime:
     dependencies:
       '@agentcorps/domain':
