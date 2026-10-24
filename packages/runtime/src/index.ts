@@ -14,6 +14,7 @@ import {
   type TaskId,
   type TaskStatus,
 } from '@agentcorps/domain';
+import { MemoryService, type MemoryRecord } from '@agentcorps/memory';
 
 export interface EventStore {
   append(event: TaskEvent): void;
@@ -48,14 +49,14 @@ export class JsonlEventStore implements EventStore {
     mkdirSync(dirname(filePath), { recursive: true });
     this.events = existsSync(filePath)
       ? readFileSync(filePath, 'utf8')
-          .split('\\n')
+          .split('\n')
           .filter(Boolean)
           .map((line) => JSON.parse(line) as TaskEvent)
       : [];
   }
 
   append(event: TaskEvent): void {
-    appendFileSync(this.filePath, `${JSON.stringify(event)}\\n`, 'utf8');
+    appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, 'utf8');
     this.events.push(event);
     for (const listener of this.listeners) listener(event);
   }
@@ -145,6 +146,7 @@ export interface AgentRequest {
   readonly task: Task;
   readonly runId: RunId;
   readonly signal: AbortSignal;
+  readonly memory?: readonly MemoryRecord[];
   readonly emit: (text: string, stream?: 'stdout' | 'stderr' | 'assistant') => void;
 }
 
@@ -194,11 +196,13 @@ export interface TaskRuntimeOptions {
   readonly id?: (prefix: string) => string;
   readonly store?: EventStore;
   readonly policy?: Policy;
+  readonly memory?: MemoryService;
 }
 
 export class TaskRuntime {
   readonly store: EventStore;
   readonly policy: Policy;
+  readonly memory: MemoryService | undefined;
   private readonly now: () => string;
   private readonly id: (prefix: string) => string;
   private readonly tasks = new Map<TaskId, Task>();
@@ -207,6 +211,7 @@ export class TaskRuntime {
   constructor(options: TaskRuntimeOptions = {}) {
     this.store = options.store ?? new InMemoryEventStore();
     this.policy = options.policy ?? new DefaultPolicy();
+    this.memory = options.memory;
     this.now = options.now ?? (() => new Date().toISOString());
     this.id = options.id ?? ((prefix) => `${prefix}-${crypto.randomUUID()}`);
     this.store.subscribe((event) => this.project(event));
@@ -270,8 +275,9 @@ export class TaskRuntime {
     this.store.append(this.event('run.started', task.id, { runId, agentId: agent.descriptor.id }));
     const controller = new AbortController();
     this.activeRuns.set(taskId, controller);
+    const contextMemory = this.memory?.search(task.objective, { workspaceId: task.workspaceId, sessionId: task.sessionId }) ?? [];
     try {
-      await agent.execute({ task: this.tasks.get(taskId)!, runId, signal: controller.signal, emit: (text, stream = 'assistant') => {
+      await agent.execute({ task: this.tasks.get(taskId)!, runId, signal: controller.signal, ...(contextMemory.length ? { memory: contextMemory } : {}), emit: (text, stream = 'assistant') => {
         this.store.append(this.event('run.output', task.id, { runId, text, stream }));
       }});
       if (this.tasks.get(taskId)?.status !== 'cancelled') this.changeStatus(this.tasks.get(taskId)!, 'succeeded');

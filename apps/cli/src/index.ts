@@ -76,8 +76,8 @@ function dataDirectory(): string {
   return flag('--data-dir') ?? join(homedir(), '.agentcorps');
 }
 
-function runtime(): TaskRuntime {
-  return new TaskRuntime({ store: new SqliteEventStore(join(dataDirectory(), 'agentcorps.db')) });
+function runtime(memory = memoryService()): TaskRuntime {
+  return new TaskRuntime({ store: new SqliteEventStore(join(dataDirectory(), 'agentcorps.db')), memory });
 }
 
 function memoryService(): MemoryService {
@@ -104,8 +104,9 @@ async function main(): Promise<void> {
     if (host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('Remote gateway binding requires --token');
     const dataDir = dataDirectory();
     const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? '*' : undefined);
-    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}), memory: { service: memoryService() }, agentFactory: () => agentForRun() };
-    const server = await listenGateway(runtime(), port, host, new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))), gatewayOptions);
+    const memories = memoryService();
+    const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}), memory: { service: memories }, agentFactory: () => agentForRun() };
+    const server = await listenGateway(runtime(memories), port, host, new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))), gatewayOptions);
     console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);
     return;
   }

@@ -56,7 +56,7 @@ export class JsonlMemoryStore implements MemoryStore {
   constructor(private readonly filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     if (!existsSync(filePath)) return;
-    for (const line of readFileSync(filePath, 'utf8').split('\\n').filter(Boolean)) {
+    for (const line of readFileSync(filePath, 'utf8').split('\n').filter(Boolean)) {
       const operation = JSON.parse(line) as MemoryOperation;
       if (operation.op === 'upsert') this.records.set(operation.record.id, operation.record);
       if (operation.op === 'delete') this.records.set(operation.record.id, operation.record);
@@ -86,7 +86,7 @@ export class JsonlMemoryStore implements MemoryStore {
   }
 
   private append(operation: MemoryOperation): void {
-    appendFileSync(this.filePath, `${JSON.stringify(operation)}\\n`, 'utf8');
+    appendFileSync(this.filePath, `${JSON.stringify(operation)}\n`, 'utf8');
   }
 }
 
@@ -140,7 +140,7 @@ export class MemoryService {
   }
 
   search(query: string, context: MemoryContext, limit = 10): readonly MemoryRecord[] {
-    const terms = query.toLowerCase().split(/\\s+/).filter(Boolean);
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (!terms.length) return [];
     const now = this.now();
     return this.store.list()

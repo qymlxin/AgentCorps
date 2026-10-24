@@ -91,6 +91,9 @@ importers:
       '@agentcorps/domain':
         specifier: workspace:*
         version: link:../domain
+      '@agentcorps/memory':
+        specifier: workspace:*
+        version: link:../memory
 
   packages/security: {}
 
