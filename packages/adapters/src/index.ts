@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { AgentDescriptor } from '@agentcorps/domain';
+import { A2AClient, AcpStdioClient, type A2AClientOptions, type AcpClientOptions } from '@agentcorps/protocols';
 import type { AgentAdapter, AgentRequest } from '@agentcorps/runtime';
 
 export interface JsonlAgentOptions {
@@ -165,6 +166,109 @@ export class JsonlAgentAdapter implements AgentAdapter {
   }
 }
 
+export interface A2AAgentAdapterOptions {
+  readonly id: string;
+  readonly displayName: string;
+  readonly client?: A2AClient;
+  readonly clientOptions?: A2AClientOptions;
+  readonly version?: string;
+  readonly capabilities?: AgentDescriptor['capabilities'];
+}
+
+export class A2AAgentAdapter implements AgentAdapter {
+  readonly descriptor: AgentDescriptor;
+  private readonly client: A2AClient;
+
+  constructor(options: A2AAgentAdapterOptions) {
+    if (!options.client && !options.clientOptions) throw new Error('A2A adapter requires a client or clientOptions');
+    this.client = options.client ?? new A2AClient(options.clientOptions!);
+    this.descriptor = {
+      id: options.id,
+      displayName: options.displayName,
+      version: options.version ?? 'unprobed',
+      transport: 'a2a',
+      capabilities: options.capabilities ?? [],
+    };
+  }
+
+  async execute(request: AgentRequest): Promise<void> {
+    if (request.signal.aborted) throw abortError();
+    const result = await this.client.sendMessage(buildAgentPrompt(request), request.task.sessionId);
+    if (request.signal.aborted) throw abortError();
+    request.emit(JSON.stringify(result), 'assistant');
+  }
+}
+
+export interface AcpAgentAdapterOptions {
+  readonly id: string;
+  readonly displayName: string;
+  readonly clientOptions: AcpClientOptions;
+  readonly version?: string;
+  readonly capabilities?: AgentDescriptor['capabilities'];
+}
+
+export class AcpAgentAdapter implements AgentAdapter {
+  readonly descriptor: AgentDescriptor;
+  private readonly client: AcpStdioClient;
+  private readonly cwd: string;
+  private readonly sessions = new Map<string, string>();
+  private activeEmit: ((text: string, stream?: 'stdout' | 'stderr' | 'assistant') => void) | undefined;
+
+  constructor(options: AcpAgentAdapterOptions) {
+    const configuredUpdate = options.clientOptions.onUpdate;
+    this.cwd = options.clientOptions.cwd ?? process.cwd();
+    this.client = new AcpStdioClient({
+      ...options.clientOptions,
+      onUpdate: (params) => {
+        configuredUpdate?.(params);
+        this.activeEmit?.(JSON.stringify(params), 'assistant');
+      },
+    });
+    this.descriptor = {
+      id: options.id,
+      displayName: options.displayName,
+      version: options.version ?? 'unprobed',
+      transport: 'acp',
+      capabilities: options.capabilities ?? [],
+    };
+  }
+
+  async execute(request: AgentRequest): Promise<void> {
+    if (request.signal.aborted) throw abortError();
+    await this.client.initialize();
+    let sessionId = this.sessions.get(request.task.sessionId);
+    if (!sessionId) {
+      const session = await this.client.newSession(this.clientCwd());
+      sessionId = session.sessionId;
+      this.sessions.set(request.task.sessionId, sessionId);
+    }
+    this.activeEmit = request.emit;
+    try {
+      const result = await this.prompt(sessionId, buildAgentPrompt(request), request.signal);
+      request.emit(JSON.stringify(result), 'assistant');
+    } finally {
+      this.activeEmit = undefined;
+    }
+  }
+
+  close(): void { this.client.close(); }
+
+  private async prompt(sessionId: string, prompt: string, signal: AbortSignal): Promise<unknown> {
+    return await new Promise((resolve, reject) => {
+      const abort = () => {
+        this.client.cancel(sessionId);
+        reject(abortError());
+      };
+      if (signal.aborted) return abort();
+      signal.addEventListener('abort', abort, { once: true });
+      this.client.prompt(sessionId, prompt).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
+  }
+
+  private clientCwd(): string {
+    return this.cwd;
+  }
+}
 export interface CommandAgentOptions {
   readonly id: string;
   readonly displayName: string;

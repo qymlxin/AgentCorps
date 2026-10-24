@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentRequest } from '@agentcorps/runtime';
-import { CommandAgentAdapter, JsonlAgentAdapter, probeAgent, probeCommand } from './index.js';
+import { A2AAgentAdapter, AcpAgentAdapter, CommandAgentAdapter, JsonlAgentAdapter, probeAgent, probeCommand } from './index.js';
 
 describe('local process adapters', () => {
   it('streams JSON frames and tolerates plain diagnostic lines', async () => {
@@ -95,7 +95,42 @@ describe('local process adapters', () => {
     expect(output[0]).not.toContain('do not expose this secret');
   });
 
-  it('passes the stable session identifier to command processes', async () => {
+  it('executes an A2A task through the common AgentAdapter contract', async () => {
+    const output: string[] = [];
+    const adapter = new A2AAgentAdapter({
+      id: 'a2a-fixture',
+      displayName: 'A2A fixture',
+      clientOptions: {
+        agentUrl: 'https://fixture.test/agent',
+        fetchImpl: async () => new Response(JSON.stringify({ result: { id: 'remote-task-1', status: { state: 'completed' }, artifacts: [{ text: 'remote result' }] } }), { status: 200, headers: { 'content-type': 'application/json' } }),
+      },
+    });
+    await adapter.execute({
+      task: { id: 'task-1' as never, workspaceId: 'ws', sessionId: 's', title: 'test', objective: 'ask remote agent', mode: 'code', status: 'running', createdAt: '', updatedAt: '' },
+      runId: 'run-1' as never,
+      signal: new AbortController().signal,
+      emit: (text) => output.push(text),
+    });
+    expect(adapter.descriptor.transport).toBe('a2a');
+    expect(output[0]).toContain('remote-task-1');
+  });
+
+  it('executes and reuses an ACP session through the common AgentAdapter contract', async () => {
+    const output: string[] = [];
+    const script = "const rl=require('node:readline').createInterface({input:process.stdin}); let sessionCount=0; rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); if(m.method==='session/new'){sessionCount++; console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'acp-session-'+sessionCount}}));} if(m.method==='session/prompt') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn',sessionId:m.params.sessionId}}));});";
+    const adapter = new AcpAgentAdapter({
+      id: 'acp-fixture',
+      displayName: 'ACP fixture',
+      clientOptions: { command: process.execPath, args: ['-e', script], cwd: process.cwd() },
+    });
+    const task = { id: 'task-1' as never, workspaceId: 'ws', sessionId: 's', title: 'test', objective: 'ask local agent', mode: 'code' as const, status: 'running' as const, createdAt: '', updatedAt: '' };
+    const request = () => ({ task, runId: 'run-1' as never, signal: new AbortController().signal, emit: (text: string) => output.push(text) });
+    await adapter.execute(request());
+    await adapter.execute(request());
+    adapter.close();
+    expect(adapter.descriptor.transport).toBe('acp');
+    expect(output.filter((text) => text.includes('end_turn'))).toHaveLength(2);
+  });  it('passes the stable session identifier to command processes', async () => {
     const output: string[] = [];
     const adapter = new CommandAgentAdapter({
       id: 'session-fixture',

@@ -84,4 +84,14 @@ agentcorps task probe --agent codex
 
 `JsonlAgentAdapter` 会把任务的 `sessionId` 同时放入 legacy frame。所有本地进程适配器默认设置 `AGENTCORPS_SESSION_ID` 环境变量，也可以通过 `sessionIdEnv` 改名。这样厂商包装器可以用稳定的 AgentCorps session 标识选择自己的恢复参数；适配器不会假设 Codex、Claude Code、Cursor 的恢复 CLI 参数完全一致。
 
+## A2A 和 ACP 适配器
+
+`A2AAgentAdapter` 和 `AcpAgentAdapter` 也实现同一个 `AgentAdapter` 接口，因此可以直接传给 `TaskRuntime.runTask`：
+
+- A2A 适配器把任务 prompt 和稳定的 `Task.sessionId` 作为 A2A context 发送，并把远程任务响应作为 assistant 输出事件。
+- ACP 适配器维护进程内 ACP client，并按 AgentCorps `sessionId` 复用 ACP session；`session/update` 会转成 assistant 输出，取消会发送 `session/cancel`。
+- 两者的 `descriptor.transport` 分别为 `a2a` 和 `acp`，能力仍需调用方显式映射，不能从协议连接成功推断权限。
+
+这两个适配器只负责协议边界和输出转换，工具审批、审计和沙箱权限仍由运行时安全层负责。
+
 适配器不负责授予权限，也不把凭据写入子进程输入。运行时必须先通过策略判断，再传入明确的工作区、环境变量和能力范围；后续沙箱执行器会在适配器之外提供更强的文件系统和网络隔离。

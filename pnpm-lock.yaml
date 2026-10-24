@@ -49,6 +49,9 @@ importers:
       '@agentcorps/domain':
         specifier: workspace:*
         version: link:../domain
+      '@agentcorps/protocols':
+        specifier: workspace:*
+        version: link:../protocols
       '@agentcorps/runtime':
         specifier: workspace:*
         version: link:../runtime
