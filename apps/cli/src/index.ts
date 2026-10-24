@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     const token = flag('--token');
     if (host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('Remote gateway binding requires --token');
     const dataDir = dataDirectory();
-    const corsOrigin = flag('--cors-origin');
+    const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? '*' : undefined);
     const gatewayOptions = { ...(token ? { bearerToken: token } : {}), ...(corsOrigin ? { corsOrigin } : {}) };
     const server = await listenGateway(runtime(), port, host, new SessionService(new JsonlSessionStore(join(dataDir, 'sessions.jsonl'))), gatewayOptions);
     console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);

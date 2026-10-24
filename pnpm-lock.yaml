@@ -39,6 +39,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/session
 
+  apps/console: {}
+
   packages/adapters:
     dependencies:
       '@agentcorps/domain':

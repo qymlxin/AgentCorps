@@ -1,0 +1,9 @@
+{
+  "name": "agentcorps-console",
+  "short_name": "AgentCorps",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#101318",
+  "theme_color": "#101318",
+  "description": "Local-first multi-agent control console"
+}
