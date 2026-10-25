@@ -1,6 +1,7 @@
 import { registerKimi } from './providers/kimi.js';
 import { registerQwen } from './providers/qwen.js';
 import { registerZCode } from './providers/zcode.js';
+import { registerDeepSeekHarness } from './providers/deepseek-harness.js';
 import type { AgentOutputDecoder } from './output.js';
 import { CommandAgentAdapter, type CommandAgentOptions } from './index.js';
 import { getRolePreset, withRole } from './roles.js';
@@ -111,5 +112,6 @@ export function createAgentToolRegistry(): AgentToolRegistry {
   registerKimi(registry);
   registerQwen(registry);
   registerZCode(registry);
+  registerDeepSeekHarness(registry);
   return registry;
 }

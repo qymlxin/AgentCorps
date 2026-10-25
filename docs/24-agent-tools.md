@@ -34,6 +34,17 @@ agentcorps task run TASK_ID --agent zcode --role planner
 
 **权限注意：** ZCode 的 `--prompt` 模式缺省为 `yolo`，角色 `planner` / `reviewer` 不会降低权限。需要原生 plan 模式时，完整覆盖参数，例如 `--agent-arg --mode --agent-arg plan --agent-arg --output-format --agent-arg stream-json --agent-arg --no-color --agent-arg --prompt`；或者使用受控外部沙箱。工具权限拒绝后仍可能正常结束，不等价于任务通过验收。
 
+## DeepSeek Harness
+
+```bash
+agentcorps task probe --agent deepseek-harness
+agentcorps task run TASK_ID --agent deepseek-harness --role developer --instructions "先运行测试再修改"
+```
+
+使用 [DeepSeek 官方 Harness](https://github.com/deepseek-ai/deepseek-harness) 的 `dsh --profile headless PROMPT`：创建一次持久化会话，打印最终文本并退出。`sdk`、`acp`、`web` 是不同的持久服务入口，不会误当一次性任务命令启动。官方包为 `@deepseek-ai/dsh`，AgentCorps 不自动安装或初始化个人配置。
+
+首次运行可能自动初始化 headless profile；模型、凭据和插件通过 Harness 自身 profile 配置管理，此适配器不声明未验证的 `--model` 参数。项目仍处于 developer preview，升级后需复验命令接口。执行前阅读其 [安全说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md)，角色提示词不能代替插件权限和进程隔离。
+
 ## 验证边界
 
 每个内置工具都有独立测试，使用真实本地子进程核对默认参数、模型参数、角色与记忆提示词、输出协议和错误传播。测试不需要厂商账号，不能代替已安装厂商 CLI 的鉴权、额度、网络和真实模型调用验收。`task probe` 仅运行版本命令，也不证明模型调用成功。兼容性以链接中的官方接口为准，升级 CLI 后应重新执行最小任务。
