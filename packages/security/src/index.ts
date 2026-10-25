@@ -72,6 +72,7 @@ export class SqliteAuditLog implements AuditLog {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS audit_records (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,6 +213,7 @@ export class SqliteApprovalStore implements ApprovalStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY,

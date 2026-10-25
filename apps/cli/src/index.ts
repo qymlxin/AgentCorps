@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, probeAgent, type AgentProbeOptions } from '@agentcorps/adapters';
@@ -18,7 +18,7 @@ function usage(): never {
 
 Commands:
   demo                                      Run an in-memory local demo
-  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--data-dir PATH]    Start the local HTTP/SSE gateway
+  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH]    Start the local HTTP/SSE/WebSocket gateway
   task create --title T --objective O       Create a persistent task
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
@@ -36,6 +36,7 @@ Commands:
   memory list                              List exported memories
   memory delete MEMORY_ID                 Soft-delete a memory
   data migrate [--data-dir PATH]          Migrate legacy JSONL sessions and memory
+  data export --output PATH               Export events, sessions, messages, and memories
   data backup --output PATH                Copy the SQLite database to a backup file
   data restore --input PATH                Replace the SQLite database from a backup file
   device provision --label LABEL           Create a local device identity and print its token
@@ -283,18 +284,59 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({ databasePath, memoryRecords, sessionRecords }, null, 2));
       return;
     }
+    if (action === 'export') {
+      const output = requiredFlag('--output');
+      const eventStore = new SqliteEventStore(databasePath);
+      const sessionStore = new SqliteSessionStore(databasePath);
+      const memoryStore = new SqliteMemoryStore(databasePath);
+      try {
+        const sessions = sessionStore.listSessions().map((session) => ({ session, messages: sessionStore.listMessages(session.id) }));
+        const snapshot = { schemaVersion: 1, generatedAt: new Date().toISOString(), events: eventStore.list(), sessions, memories: memoryStore.list().filter((record) => !record.deletedAt) };
+        const serialized = JSON.stringify(snapshot, null, 2);
+        mkdirSync(dirname(output), { recursive: true });
+        const temporary = `${output}.tmp-${process.pid}`;
+        writeFileSync(temporary, `${serialized}\n`, { encoding: 'utf8', mode: 0o600 });
+        renameSync(temporary, output);
+        console.log(JSON.stringify({ output, sha256: createHash('sha256').update(serialized).digest('hex'), counts: { events: snapshot.events.length, sessions: snapshot.sessions.length, memories: snapshot.memories.length } }, null, 2));
+      } finally {
+        eventStore.close();
+        sessionStore.close();
+        memoryStore.close();
+      }
+      return;
+    }
     if (action === 'backup') {
       const output = requiredFlag('--output');
       if (!existsSync(databasePath)) throw new Error(`Database not found: ${databasePath}`);
+      const database = new SqliteEventStore(databasePath);
+      try {
+        if (database.integrityCheck() !== 'ok') throw new Error(`Database integrity check failed: ${databasePath}`);
+        database.checkpoint();
+      } finally {
+        database.close();
+      }
       mkdirSync(dirname(output), { recursive: true });
-      copyFileSync(databasePath, output);
+      const temporary = `${output}.tmp-${process.pid}`;
+      copyFileSync(databasePath, temporary);
+      chmodSync(temporary, 0o600);
+      renameSync(temporary, output);
       console.log(JSON.stringify({ source: databasePath, output }));
       return;
     }
     if (action === 'restore') {
       const input = requiredFlag('--input');
       if (!existsSync(input)) throw new Error(`Backup not found: ${input}`);
-      copyFileSync(input, databasePath);
+      const validation = new SqliteEventStore(input);
+      try {
+        if (validation.integrityCheck() !== 'ok') throw new Error(`Backup integrity check failed: ${input}`);
+      } finally {
+        validation.close();
+      }
+      mkdirSync(dirname(databasePath), { recursive: true });
+      const temporary = `${databasePath}.restore-${process.pid}`;
+      copyFileSync(input, temporary);
+      chmodSync(temporary, 0o600);
+      renameSync(temporary, databasePath);
       console.log(JSON.stringify({ input, databasePath }));
       return;
     }
@@ -305,7 +347,8 @@ async function main(): Promise<void> {
     const port = Number(flag('--port') ?? '43210');
     const host = flag('--host') ?? '127.0.0.1';
     const token = flag('--token');
-    if (host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('Remote gateway binding requires --token');
+    const readOnlyToken = flag('--read-only-token');
+    if (host !== '127.0.0.1' && host !== 'localhost' && !token && !readOnlyToken) throw new Error('Remote gateway binding requires --token or --read-only-token');
     const dataDir = dataDirectory();
     const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? undefined : undefined);
     const memories = memoryService();
@@ -317,14 +360,28 @@ async function main(): Promise<void> {
     const audit = new SqliteAuditLog(deviceDatabasePath(dataDir));
     const approvalStore = new SqliteApprovalStore(deviceDatabasePath(dataDir));
     const gatewayOptions = {
-      ...(token ? { bearerToken: token } : { tokenVerifier: async (candidate: string) => Boolean(deviceServices?.verifier.verify(candidate)) }),
+      ...((token || readOnlyToken) ? { tokenVerifier: async (candidate: string) => candidate === readOnlyToken ? { roles: ['read'] as const } : candidate === token } : { tokenVerifier: async (candidate: string) => Boolean(deviceServices?.verifier.verify(candidate)) }),
       ...(corsOrigin ? { corsOrigin } : {}),
       channels: { stateStore: channelState, ...(identityResolver ? { identityResolver } : {}) },
       memory: { service: memories },
       security: { context: { mode: 'code' as const, profile: createDefaultProfile(process.cwd(), 'S2') }, engine: new PolicyEngine(audit), approvals: new ApprovalService(approvalStore), allowApprovalDecisions: true },
       agentFactory: () => agentForRun(),
     };
-    const server = await listenGateway(runtime(memories), port, host, new SessionService(new SqliteSessionStore(join(dataDir, 'agentcorps.db'))), gatewayOptions);
+    const sessionStore = new SqliteSessionStore(join(dataDir, 'agentcorps.db'));
+    const localRuntime = runtime(memories);
+    const server = await listenGateway(localRuntime, port, host, new SessionService(sessionStore), gatewayOptions);
+    const shutdown = (): void => {
+      localRuntime.shutdown('Gateway shutting down');
+      server.close();
+      channelState.close();
+      audit.close();
+      approvalStore.close();
+      sessionStore.close();
+      bindings?.close();
+      deviceServices?.store.close();
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
     console.log(`AgentCorps gateway listening on http://${host}:${(server.address() as { port: number }).port}`);
     return;
   }

@@ -9,7 +9,8 @@ describe('sessions', () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentcorps-session-'));
     const path = join(directory, 'sessions.jsonl');
     try {
-      const first = new SessionService(new JsonlSessionStore(path), () => '2026-10-24T00:00:00.000Z', (prefix) => `${prefix}-1`);
+      let sequence = 0;
+      const first = new SessionService(new JsonlSessionStore(path), () => '2026-10-24T00:00:00.000Z', (prefix) => `${prefix}-${++sequence}`);
       const session = first.create({ workspaceId: 'ws', title: 'Shared thread', mode: 'code' });
       first.appendMessage({ sessionId: session.id, role: 'user', content: 'Continue this from the CLI' });
       first.appendMessage({ sessionId: session.id, role: 'agent', content: 'I found the previous context' });

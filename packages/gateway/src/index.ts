@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 import type { TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
 import { ApprovalService, ExternalIdentityResolver, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
@@ -28,6 +30,35 @@ import {
 const MAX_BODY_BYTES = 1024 * 1024;
 
 type JsonRecord = Record<string, unknown>;
+
+export type GatewayRole = 'read' | 'write' | 'approve' | 'admin';
+
+export interface GatewayPrincipal {
+  readonly subject?: string;
+  readonly roles: readonly GatewayRole[];
+}
+
+export type GatewayTokenVerification = boolean | GatewayPrincipal;
+
+function principalFromVerification(value: GatewayTokenVerification): GatewayPrincipal | undefined {
+  if (value === false) return undefined;
+  if (value === true) return { roles: ['admin'] };
+  return value.roles.length ? value : undefined;
+}
+
+function hasRole(principal: GatewayPrincipal, role: GatewayRole): boolean {
+  return principal.roles.includes('admin') || principal.roles.includes(role);
+}
+
+function requiredRole(method: string, pathname: string): GatewayRole {
+  if (method === 'GET' || method === 'HEAD') return 'read';
+  if (/^\/approvals\/[^/]+\/(approve|deny|consume)$/.test(pathname)) return 'approve';
+  return 'write';
+}
+
+function sendSse(response: ServerResponse, event: { id?: string; type: string; payload: unknown }): void {
+  response.write(`event: ${event.type}\ndata: ${JSON.stringify(event.payload)}\n${event.id ? `id: ${event.id}\n` : ''}\n`);
+}
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -132,7 +163,8 @@ export interface SecurityGatewayOptions {
 
 export interface GatewayOptions {
   readonly bearerToken?: string;
-  readonly tokenVerifier?: (token: string) => boolean | Promise<boolean>;
+  /** Returns true for a full-access principal, or a scoped principal for remote read-only clients. */
+  readonly tokenVerifier?: (token: string) => GatewayTokenVerification | Promise<GatewayTokenVerification>;
   readonly corsOrigin?: string;
   readonly channels?: ChannelGatewayOptions;
   readonly memory?: MemoryGatewayOptions;
@@ -172,13 +204,100 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-async function isAuthorized(request: IncomingMessage, options: GatewayOptions): Promise<boolean> {
+function replayStart<T extends { id: string }>(history: readonly T[], lastEventId: string | undefined): number {
+  if (!lastEventId) return 0;
+  const index = history.findIndex((event) => event.id === lastEventId);
+  return index < 0 ? 0 : index + 1;
+}
+
+async function authenticate(request: IncomingMessage, options: GatewayOptions, tokenOverride?: string): Promise<GatewayPrincipal | undefined> {
   const authorization = request.headers.authorization;
-  if (!authorization?.startsWith('Bearer ')) return !options.bearerToken && !options.tokenVerifier;
-  const token = authorization.slice('Bearer '.length);
-  if (options.bearerToken && token === options.bearerToken) return true;
-  if (!options.tokenVerifier) return false;
-  try { return await options.tokenVerifier(token); } catch { return false; }
+  const token = tokenOverride ?? (authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : undefined);
+  if (!token) return !options.bearerToken && !options.tokenVerifier ? { roles: ['admin'] } : undefined;
+  if (options.bearerToken && token === options.bearerToken) return { roles: ['admin'] };
+  if (!options.tokenVerifier) return undefined;
+  try { return principalFromVerification(await options.tokenVerifier(token)); } catch { return undefined; }
+}
+
+function bearerFromWebSocket(request: IncomingMessage): string | undefined {
+  const authorization = request.headers.authorization;
+  if (authorization?.startsWith('Bearer ')) return authorization.slice('Bearer '.length);
+  try {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    const queryToken = url.searchParams.get('access_token');
+    if (queryToken) return queryToken;
+  } catch { /* malformed upgrade URLs are rejected by the caller */ }
+  const protocols = headerValue(request.headers['sec-websocket-protocol'])?.split(',').map((value) => value.trim()) ?? [];
+  const bearer = protocols.find((value) => value.startsWith('bearer.'));
+  return bearer ? Buffer.from(bearer.slice('bearer.'.length), 'base64url').toString('utf8') : undefined;
+}
+
+function websocketFrame(value: string | Buffer, opcode = 0x1): Buffer {
+  const payload = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  const header = payload.byteLength < 126 ? Buffer.from([0x80 | opcode, payload.byteLength])
+    : payload.byteLength <= 0xffff ? Buffer.from([0x80 | opcode, 126, payload.byteLength >> 8, payload.byteLength & 0xff])
+      : Buffer.concat([Buffer.from([0x80 | opcode, 127]), Buffer.from([0, 0, 0, 0, payload.byteLength >>> 24, (payload.byteLength >>> 16) & 0xff, (payload.byteLength >>> 8) & 0xff, payload.byteLength & 0xff])]);
+  return Buffer.concat([header, payload]);
+}
+
+function attachWebSocket(server: Server, runtime: TaskRuntime, options: GatewayOptions): void {
+  const clients = new Set<{ socket: Duplex; buffer: Buffer; unsubscribe: () => void }>();
+  server.on('upgrade', async (request, socket, head) => {
+    let url: URL;
+    try { url = new URL(request.url ?? '/', 'http://127.0.0.1'); } catch { socket.destroy(); return; }
+    if (url.pathname !== '/ws') { socket.destroy(); return; }
+    const principal = await authenticate(request, options, bearerFromWebSocket(request));
+    if (!principal || !hasRole(principal, 'read')) { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
+    const key = headerValue(request.headers['sec-websocket-key']);
+    if (!key) { socket.destroy(); return; }
+    const protocols = headerValue(request.headers['sec-websocket-protocol'])?.split(',').map((value) => value.trim()) ?? [];
+    const protocol = protocols.includes('agentcorps.v1') ? 'agentcorps.v1' : undefined;
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64')}\r\n${protocol ? `Sec-WebSocket-Protocol: ${protocol}\r\n` : ''}\r\n`);
+    const client: { socket: Duplex; buffer: Buffer; unsubscribe: () => void } = { socket, buffer: Buffer.alloc(0), unsubscribe: () => undefined };
+    clients.add(client);
+    const lastEventId = headerValue(request.headers['last-event-id']) ?? url.searchParams.get('lastEventId') ?? undefined;
+    const history = runtime.store.list();
+    const start = replayStart(history, lastEventId);
+    const replayEvents = history.slice(start);
+    const replayedIds = new Set(replayEvents.map((event) => event.id));
+    const pending: Array<(typeof history)[number]> = [];
+    let replaying = true;
+    const send = (payload: unknown): void => { if (!socket.destroyed) socket.write(websocketFrame(JSON.stringify(payload))); };
+    client.unsubscribe = runtime.store.subscribe((event) => {
+      if (replaying) pending.push(event);
+      else send({ type: event.type, event });
+    });
+    setImmediate(() => {
+      send({ type: 'ready', service: 'agentcorps-gateway' });
+      for (const event of replayEvents) send({ type: event.type, event });
+      replaying = false;
+      for (const event of pending) if (!replayedIds.has(event.id)) send({ type: event.type, event });
+    });
+    const close = (): void => { client.unsubscribe(); clients.delete(client); if (!socket.destroyed) socket.end(); };
+    socket.on('data', (chunk: Buffer) => {
+      client.buffer = Buffer.concat([client.buffer, chunk]);
+      while (client.buffer.byteLength >= 2) {
+        const first = client.buffer[0]!; const second = client.buffer[1]!;
+        let length = second & 0x7f; let offset = 2;
+        if (length === 126) { if (client.buffer.byteLength < 4) return; length = client.buffer.readUInt16BE(2); offset = 4; }
+        else if (length === 127) { if (client.buffer.byteLength < 10) return; const large = client.buffer.readBigUInt64BE(2); if (large > BigInt(Number.MAX_SAFE_INTEGER)) return close(); length = Number(large); offset = 10; }
+        const masked = (second & 0x80) !== 0;
+        if (masked) offset += 4;
+        if (client.buffer.byteLength < offset + length) return;
+        const mask = masked ? client.buffer.subarray(offset - 4, offset) : undefined;
+        const payload = Buffer.from(client.buffer.subarray(offset, offset + length));
+        client.buffer = client.buffer.subarray(offset + length);
+        if (mask) for (let index = 0; index < payload.length; index += 1) payload[index] = payload[index]! ^ mask[index % 4]!;
+        const opcode = first & 0x0f;
+        if (opcode === 0x8) return close();
+        if (opcode === 0x9) socket.write(websocketFrame(payload, 0xA));
+      }
+    });
+    socket.on('error', close);
+    socket.on('close', close);
+    if (head.length) socket.emit('data', head);
+  });
+  server.on('close', () => { for (const client of clients) { client.unsubscribe(); client.socket.end(); } clients.clear(); });
 }
 
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
@@ -188,15 +307,11 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
   const memories = options.memory?.service ?? new MemoryService(new InMemoryMemoryStore());
   const policyEngine = options.security?.engine ?? new PolicyEngine(new InMemoryAuditLog());
   const approvals = options.security?.approvals ?? new ApprovalService(new InMemoryApprovalStore());
-  return createServer(async (request, response) => {
+  const server = createServer(async (request, response) => {
     setCors(response, options);
     if (request.method === 'OPTIONS') {
       response.writeHead(204);
       response.end();
-      return;
-    }
-    if (!await isAuthorized(request, options) && request.url !== '/health') {
-      sendJson(response, 401, { error: 'Bearer token required' });
       return;
     }
     try {
@@ -204,6 +319,15 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
       const { pathname } = url;
       if (request.method === 'GET' && pathname === '/health') {
         sendJson(response, 200, { status: 'ok', service: 'agentcorps-gateway', version: '0.1.0' });
+        return;
+      }
+      const principal = await authenticate(request, options);
+      if (!principal) {
+        sendJson(response, 401, { error: 'Bearer token required' });
+        return;
+      }
+      if (!hasRole(principal, requiredRole(request.method ?? 'GET', pathname))) {
+        sendJson(response, 403, { error: 'Insufficient gateway role' });
         return;
       }
       if (request.method === 'GET' && pathname === '/channels') {
@@ -392,8 +516,22 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
       }
       if (request.method === 'GET' && pathname === '/events') {
         response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
-        response.write(`event: ready\ndata: ${JSON.stringify({ service: 'agentcorps-gateway' })}\n\n`);
-        const unsubscribe = runtime.store.subscribe((event) => response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+        sendSse(response, { type: 'ready', payload: { service: 'agentcorps-gateway' } });
+        const lastEventId = headerValue(request.headers['last-event-id']) ?? url.searchParams.get('lastEventId') ?? undefined;
+        const history = runtime.store.list();
+        const start = replayStart(history, lastEventId);
+        const replayEvents = history.slice(start);
+        const replayedIds = new Set(replayEvents.map((event) => event.id));
+        const pending: Array<(typeof history)[number]> = [];
+        let replaying = true;
+        const unsubscribe = runtime.store.subscribe((event) => {
+          if (replaying) pending.push(event);
+          else sendSse(response, { id: event.id, type: event.type, payload: event });
+        });
+        sendSse(response, { type: 'ready', payload: { service: 'agentcorps-gateway' } });
+        for (const event of replayEvents) sendSse(response, { id: event.id, type: event.type, payload: event });
+        replaying = false;
+        for (const event of pending) if (!replayedIds.has(event.id)) sendSse(response, { id: event.id, type: event.type, payload: event });
         request.on('close', unsubscribe);
         return;
       }
@@ -429,6 +567,8 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
       sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
     }
   });
+  attachWebSocket(server, runtime, options);
+  return server;
 }
 
 export function listenGateway(runtime: TaskRuntime, port = 43210, host = '127.0.0.1', sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Promise<Server> {

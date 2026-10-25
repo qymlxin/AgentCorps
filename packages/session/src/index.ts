@@ -53,6 +53,7 @@ export class SqliteSessionStore implements SessionStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -177,7 +178,13 @@ export class JsonlSessionStore implements SessionStore {
   private append(operation: Operation): void { appendFileSync(this.filePath, `${JSON.stringify(operation)}\n`, 'utf8'); }
   private apply(operation: Operation): void {
     if (operation.session) this.sessions.set(operation.session.id, operation.session);
-    if (operation.message) this.messages.set(operation.message.sessionId, [...(this.messages.get(operation.message.sessionId) ?? []), operation.message]);
+    if (operation.message) {
+      const current = this.messages.get(operation.message.sessionId) ?? [];
+      const index = current.findIndex((message) => message.id === operation.message!.id);
+      if (index >= 0) current[index] = operation.message;
+      else current.push(operation.message);
+      this.messages.set(operation.message.sessionId, current);
+    }
   }
 }
 
@@ -185,7 +192,13 @@ export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, Session>();
   private readonly messages = new Map<string, SessionMessage[]>();
   saveSession(session: Session): void { this.sessions.set(session.id, session); }
-  saveMessage(message: SessionMessage): void { this.messages.set(message.sessionId, [...(this.messages.get(message.sessionId) ?? []), message]); }
+  saveMessage(message: SessionMessage): void {
+    const current = this.messages.get(message.sessionId) ?? [];
+    const index = current.findIndex((entry) => entry.id === message.id);
+    if (index >= 0) current[index] = message;
+    else current.push(message);
+    this.messages.set(message.sessionId, current);
+  }
   archiveSession(id: string, archivedAt: string): Session | undefined {
     const current = this.sessions.get(id);
     if (!current || current.archivedAt) return undefined;

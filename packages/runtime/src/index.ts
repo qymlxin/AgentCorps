@@ -93,6 +93,7 @@ export class SqliteEventStore implements EventStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
@@ -139,6 +140,15 @@ export class SqliteEventStore implements EventStore {
   subscribe(listener: (event: TaskEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  checkpoint(): void {
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  }
+
+  integrityCheck(): string {
+    const row = this.db.prepare('PRAGMA integrity_check;').all()[0] as Record<string, unknown> | undefined;
+    return String(row?.integrity_check ?? 'unknown');
   }
 
   close(): void { this.db.close(); }
@@ -294,6 +304,7 @@ export class TaskRuntime {
   async runTask(taskId: TaskId, agent: AgentAdapter): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (this.activeRuns.has(taskId)) throw new Error(`Task is already running: ${taskId}`);
     const decision = this.policy.decide(task, agent.descriptor);
     if (!decision.allowed) throw new Error(`Policy denied task: ${decision.reason}`);
 
@@ -329,6 +340,15 @@ export class TaskRuntime {
       this.changeStatus(task, 'cancelled', reason);
     }
     return this.tasks.get(taskId)!;
+  }
+
+  shutdown(reason = 'Runtime shutting down'): void {
+    for (const [taskId, controller] of this.activeRuns) {
+      controller.abort(reason);
+      const task = this.tasks.get(taskId);
+      if (task && (task.status === 'running' || task.status === 'waiting_approval')) this.changeStatus(task, 'cancelled', reason);
+    }
+    this.activeRuns.clear();
   }
 
   retryTask(taskId: TaskId): Task {

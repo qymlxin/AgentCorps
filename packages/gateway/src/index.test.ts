@@ -51,7 +51,9 @@ describe('gateway', () => {
       await reader.cancel();
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
-  });  it('requires explicit external identity mapping before creating channel tasks', async () => {
+  });
+
+  it('requires explicit external identity mapping before creating channel tasks', async () => {
     const resolver = new ExternalIdentityResolver(new InMemoryExternalIdentityBindingStore(), () => '2026-10-24T00:00:00.000Z');
     const secret = 'channel-secret';
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { channels: { webhookSecrets: { feishu: secret }, identityResolver: resolver } });
@@ -200,6 +202,49 @@ describe('gateway', () => {
       expect((await fetch(`${base}/health`)).status).toBe(200);
       expect((await fetch(`${base}/tasks`)).status).toBe(401);
       expect((await fetch(`${base}/tasks`, { headers: { authorization: 'Bearer secret' } })).status).toBe(200);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('exposes authenticated WebSocket event streaming with replay support', async () => {
+    const runtime = new TaskRuntime();
+    const existing = runtime.createTask({ workspaceId: 'ws', sessionId: 's', title: 'replay', objective: 'replay me', mode: 'code' });
+    const server = await listenGateway(runtime, 0);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const ws = new WebSocket(`ws://127.0.0.1:${address.port}/ws`, ['agentcorps.v1']);
+    const messages: MessageEvent[] = [];
+    const waiters: Array<(event: MessageEvent) => void> = [];
+    ws.addEventListener('message', (event) => {
+      const waiter = waiters.shift();
+      if (waiter) waiter(event);
+      else messages.push(event);
+    });
+    const nextMessage = (): Promise<MessageEvent> => {
+      const message = messages.shift();
+      return message ? Promise.resolve(message) : new Promise((resolve) => waiters.push(resolve));
+    };
+    try {
+      await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve()); ws.addEventListener('error', () => reject(new Error('WebSocket failed to open'))); });
+      const ready = await nextMessage();
+      expect(JSON.parse(String(ready.data))).toMatchObject({ type: 'ready' });
+      const replayed = await nextMessage();
+      expect(JSON.parse(String(replayed.data))).toMatchObject({ type: 'task.created', event: { aggregateId: existing.id } });
+    } finally {
+      ws.close();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+  it('enforces scoped read-only principals on mutating routes', async () => {
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { tokenVerifier: async (token) => token === 'reader' ? { roles: ['read'] as const } : false });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      expect((await fetch(`${base}/tasks`, { headers: { authorization: 'Bearer reader' } })).status).toBe(200);
+      expect((await fetch(`${base}/tasks`, { method: 'POST', headers: { authorization: 'Bearer reader', 'content-type': 'application/json' }, body: JSON.stringify({ title: 'blocked', objective: 'blocked' }) })).status).toBe(403);
+      expect((await fetch(`${base}/tasks`)).status).toBe(401);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }

@@ -32,6 +32,7 @@ export class SqliteDeviceIdentityStore implements DeviceIdentityStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec('CREATE TABLE IF NOT EXISTS device_identities (id TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT)');
   }
   save(device: DeviceIdentity): void {

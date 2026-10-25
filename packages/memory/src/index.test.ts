@@ -33,7 +33,25 @@ describe('memory service', () => {
     }
   });
 
-  it('migrates JSONL records and tombstones into SQLite', () => {
+  it('uses the SQLite full-text index while preserving scope and sensitivity filters', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-memory-fts-'));
+    const databasePath = join(directory, 'agentcorps.db');
+    try {
+      let sequence = 0;
+      const store = new SqliteMemoryStore(databasePath);
+      const service = new MemoryService(store, () => '2026-10-24T00:00:00.000Z', () => `memory-fts-${++sequence}`);
+      service.save({ scope: 'workspace', workspaceId: 'ws', content: 'release performance checklist', source: 'user' });
+      service.save({ scope: 'workspace', workspaceId: 'other', content: 'release performance checklist', source: 'user' });
+      service.save({ scope: 'global', content: 'release performance secret', source: 'user', sensitivity: 'secret' });
+      expect(service.search('performance', { workspaceId: 'ws' })).toHaveLength(1);
+      expect(service.search('performance', { workspaceId: 'ws', includeSensitive: true })).toHaveLength(2);
+      store.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates JSONL records and tombstones to SQLite', () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentcorps-memory-sqlite-'));
     const sourcePath = join(directory, 'memory.jsonl');
     const databasePath = join(directory, 'agentcorps.db');

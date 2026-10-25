@@ -35,6 +35,7 @@ export class SqliteExternalIdentityBindingStore implements ExternalIdentityBindi
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec('CREATE TABLE IF NOT EXISTS external_identity_bindings (channel TEXT NOT NULL, external_user_id TEXT NOT NULL, device_id TEXT NOT NULL, roles_json TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT, PRIMARY KEY (channel, external_user_id))');
   }
   save(binding: ExternalIdentityBinding): void {

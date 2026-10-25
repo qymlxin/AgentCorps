@@ -22,24 +22,20 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm audit:release
-  sandbox:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @agentcorps/security test
-        env:
-          AGENTCORPS_DOCKER_E2E: '1'
 
-    timeout-minutes: 20
+  sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            docker: '1'
+            macos: '0'
+          - os: macos-latest
+            docker: '0'
+            macos: '1'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -52,5 +48,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @agentcorps/security test
         env:
-          AGENTCORPS_MACOS_SANDBOX_E2E: '1'
-      - run: pnpm --filter @agentcorps/desktop build:desktop
+          AGENTCORPS_DOCKER_E2E: ${{ matrix.docker }}
+          AGENTCORPS_MACOS_SANDBOX_E2E: ${{ matrix.macos }}
+      - if: matrix.os == 'macos-latest'
+        run: pnpm --filter @agentcorps/desktop build:desktop

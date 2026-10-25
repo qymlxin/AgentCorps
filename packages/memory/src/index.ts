@@ -49,6 +49,8 @@ export interface MemoryStore {
   delete(id: string, deletedAt: string): MemoryRecord | undefined;
   get(id: string): MemoryRecord | undefined;
   list(): readonly MemoryRecord[];
+  /** Optional indexed candidate search used by durable stores. */
+  search?(query: string, limit: number): readonly MemoryRecord[];
 }
 
 interface SqliteStatement {
@@ -70,6 +72,7 @@ export class SqliteMemoryStore implements MemoryStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -88,7 +91,9 @@ export class SqliteMemoryStore implements MemoryStore {
       );
       CREATE INDEX IF NOT EXISTS memories_scope_idx ON memories (scope, workspace_id, session_id);
       CREATE INDEX IF NOT EXISTS memories_updated_idx ON memories (updated_at);
+      CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id UNINDEXED, content, tokenize = 'unicode61');
     `);
+    for (const record of this.list()) this.index(record);
   }
 
   upsert(record: MemoryRecord): void {
@@ -105,6 +110,19 @@ export class SqliteMemoryStore implements MemoryStore {
       record.sourceEventId ?? null, record.source, record.confidence, record.sensitivity, record.createdAt,
       record.updatedAt, record.expiresAt ?? null, record.deletedAt ?? null,
     );
+    this.index(record);
+  }
+
+  private index(record: MemoryRecord): void {
+    this.db.prepare('DELETE FROM memories_fts WHERE id = ?').run(record.id);
+    if (!record.deletedAt) this.db.prepare('INSERT INTO memories_fts (id, content) VALUES (?, ?)').run(record.id, record.content);
+  }
+
+  search(query: string, limit: number): readonly MemoryRecord[] {
+    const terms = query.trim().split(/\s+/).filter(Boolean).map((term) => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
+    if (!terms) return [];
+    const rows = this.db.prepare('SELECT memories.* FROM memories JOIN memories_fts ON memories_fts.id = memories.id WHERE memories_fts MATCH ? LIMIT ?').all(terms, limit);
+    return rows.map((row) => memoryFromRow(row as Record<string, unknown>));
   }
 
   delete(id: string, deletedAt: string): MemoryRecord | undefined {
@@ -244,7 +262,8 @@ export class MemoryService {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (!terms.length) return [];
     const now = this.now();
-    return this.store.list()
+    const candidates = this.store.search ? this.store.search(query, Math.max(limit * 20, 100)) : this.store.list();
+    return candidates
       .filter((record) => !record.deletedAt && (!record.expiresAt || record.expiresAt > now))
       .filter((record) => this.visible(record, context))
       .map((record) => ({ record, score: this.score(record, terms) }))

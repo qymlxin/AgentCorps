@@ -14,7 +14,7 @@
 | ACP（Agent Client Protocol） | 编辑器/客户端 → coding Agent | 实验性 | stdio JSON-RPC 初始化、session/new、session/prompt、session/update、session/cancel 和请求回调 | 不把 ACP 会话当作内部任务或记忆的唯一模型 |
 | JSON-RPC | 请求/响应消息格式 | 已局部采用 | 编码请求、关联 request id、解码错误 | 不定义 Agent 能力和生命周期 |
 | stdio/JSONL | 本地进程传输 | 已采用 | 启动、读写、超时、取消和退出处理 | 不授予子进程额外文件、命令或网络权限 |
-| SSE、WebSocket | 流式控制面传输 | SSE 已用于 Gateway `/events` 和 A2A `message/stream`；WebSocket 仍预留 | SSE 事件回放、认证和权限校验由控制面负责；WebSocket 尚未作为控制面传输开放 |
+| SSE、WebSocket | 流式控制面传输 | SSE 和 WebSocket 已用于 Gateway 事件流；A2A 继续使用 SSE | 事件流支持认证、历史补发和断线后的最后事件 ID；写操作仍走受角色保护的 HTTP 路由 |
 | Webhook | 聊天渠道入站传输 | 基础适配器已实现 | 签名校验、去重、身份映射和消息转换 | 不直接创建越权任务或改变策略 |
 
 ## 2. A2A 当前实现

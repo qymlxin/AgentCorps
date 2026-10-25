@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryEventStore } from './index.js';
+import { InMemoryEventStore, MockAgent, TaskRuntime, type AgentAdapter } from './index.js';
 
-describe('runtime performance smoke', () => {
+describe('runtime performance', () => {
+  it('rejects concurrent duplicate runs for one task', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const agent: AgentAdapter = { descriptor: new MockAgent().descriptor, execute: async () => { await gate; } };
+    const runtime = new TaskRuntime();
+    const task = runtime.createTask({ workspaceId: 'ws', sessionId: 'session', title: 'single run', objective: 'run once', mode: 'code' });
+    const first = runtime.runTask(task.id, agent);
+    await Promise.resolve();
+    await expect(runtime.runTask(task.id, agent)).rejects.toThrow('already running');
+    release();
+    await first;
+  });
+
   it('appends and lists 10,000 events within the local control-plane budget', () => {
     const store = new InMemoryEventStore();
     const started = performance.now();
