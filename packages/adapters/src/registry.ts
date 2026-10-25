@@ -76,6 +76,7 @@ export class AgentToolRegistry {
       ...(definition.promptPlacement ? { promptPlacement: definition.promptPlacement } : {}),
       ...(definition.promptFlag && !options.args ? { promptFlag: definition.promptFlag } : {}),
       ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.env ? { env: options.env } : {}),
+      ...(options.model ? { model: options.model } : {}),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.sandbox ? { sandbox: options.sandbox } : {}),
     });

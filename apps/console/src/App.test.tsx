@@ -30,6 +30,8 @@ function gateway() {
     if (url.pathname === '/browser/screenshot') return Response.json({ screenshot: { tabId: 'tab-1', mimeType: 'image/png', data: 'cG5n' } });
     if (url.pathname === '/browser/navigate') return Response.json({ result: { tabId: 'tab-1', url: 'https://example.org' } });
     if (url.pathname === '/browser/click' || url.pathname === '/browser/fill') return Response.json({ result: { tabId: 'tab-1', selector: '#submit' } });
+    if (url.pathname === '/usage/summary') return Response.json({ summary: [{ kind: 'model', toolId: 'codex', model: 'gpt-5', calls: 2, succeeded: 2, failed: 0, approvalRequired: 0, cancelled: 0, inputTokens: 10, outputTokens: 20, totalTokens: 30, estimatedCalls: 2 }] });
+    if (url.pathname === '/usage/calls') return Response.json({ calls: [{ id: 'usage-1', kind: 'model', taskId: task.id, runId: 'run-1', toolId: 'codex', model: 'gpt-5', operation: 'agent.execute', status: 'succeeded', startedAt: session.createdAt, endedAt: session.createdAt, durationMs: 10, inputTokens: 10, outputTokens: 20, totalTokens: 30, tokenSource: 'estimated' }] });
     if (url.pathname === '/approvals') return Response.json({ approvals: [{ id: 'approval-1', request: { capability: 'shell.execute', command: 'git status' }, reason: 'Review command', status: 'pending' }] });
     return Response.json({ ok: true });
   });
@@ -109,6 +111,19 @@ describe('React management console', () => {
     await user.keyboard('7');
     expect(screen.getByRole('button', { name: 'Browser' }).getAttribute('aria-current')).toBe('page');
   });
+  it('shows model and tool usage records from the gateway', async () => {
+    const fetcher = gateway();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(task.title);
+    await user.click(screen.getByRole('button', { name: 'Usage' }));
+    expect(await screen.findByRole('heading', { name: 'Model and tool calls' })).toBeTruthy();
+    expect((await screen.findAllByText(/codex · gpt-5/)).length).toBeGreaterThan(0);
+    expect(fetcher.mock.calls.some(([url]) => new URL(String(url)).pathname === '/usage/summary')).toBe(true);
+    await user.keyboard('8');
+    expect(screen.getByRole('button', { name: 'Usage' }).getAttribute('aria-current')).toBe('page');
+  });
+
   it('opens the task dialog, command palette, and views from keyboard shortcuts', async () => {
     gateway();
     const user = userEvent.setup();

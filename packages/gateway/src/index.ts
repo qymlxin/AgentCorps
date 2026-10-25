@@ -7,7 +7,7 @@ import type { TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
 import { ApprovalService, ExternalIdentityResolver, InMemoryApprovalStore, InMemoryAuditLog, isWithin, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode, type SessionSearchOptions } from '@agentcorps/session';
-import { MockAgent, type AgentAdapter, type TaskRuntime } from '@agentcorps/runtime';
+import { MockAgent, type AgentAdapter, type TaskRuntime, UsageService, InMemoryUsageStore, type UsageFilter, type UsageKind, type UsageStatus } from '@agentcorps/runtime';
 import {
   FeishuEventAdapter,
   GenericWebhookAdapter,
@@ -141,6 +141,24 @@ function messageRole(value: unknown): MessageRole {
   throw new Error('Message role must be user, agent, system, or tool');
 }
 
+function usageFilter(url: URL): UsageFilter {
+  const kind = url.searchParams.get('kind');
+  const status = url.searchParams.get('status');
+  if (kind && !['model', 'tool', 'protocol'].includes(kind)) throw new Error('Usage kind must be model, tool, or protocol');
+  if (status && !['succeeded', 'failed', 'approval_required', 'cancelled'].includes(status)) throw new Error('Usage status is invalid');
+  const limitValue = Number(url.searchParams.get('limit') ?? '100');
+  if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 500) throw new Error('Usage limit must be between 1 and 500');
+  return {
+    ...(url.searchParams.get('from') ? { from: url.searchParams.get('from')! } : {}),
+    ...(url.searchParams.get('to') ? { to: url.searchParams.get('to')! } : {}),
+    ...(url.searchParams.get('taskId') ? { taskId: url.searchParams.get('taskId')! } : {}),
+    ...(url.searchParams.get('runId') ? { runId: url.searchParams.get('runId')! } : {}),
+    ...(url.searchParams.get('toolId') ? { toolId: url.searchParams.get('toolId')! } : {}),
+    ...(url.searchParams.get('model') ? { model: url.searchParams.get('model')! } : {}),
+    ...(kind ? { kind: kind as UsageKind } : {}), ...(status ? { status: status as UsageStatus } : {}), limit: limitValue,
+  };
+}
+
 export interface ChannelGatewayOptions {
   readonly adapters?: Partial<Record<ChannelKind, ChannelAdapter>>;
   readonly connectors?: Partial<Record<ChannelKind, ChannelConnector>>;
@@ -158,6 +176,10 @@ export interface ChannelGatewayOptions {
 export interface MemoryGatewayOptions {
   readonly service?: MemoryService;
   readonly allowSensitiveSearch?: boolean;
+}
+
+export interface UsageGatewayOptions {
+  readonly service?: UsageService;
 }
 
 export interface FileGatewayOptions {
@@ -181,6 +203,7 @@ export interface GatewayOptions {
   readonly corsOrigin?: string;
   readonly channels?: ChannelGatewayOptions;
   readonly memory?: MemoryGatewayOptions;
+  readonly usage?: UsageGatewayOptions;
   readonly files?: FileGatewayOptions;
   readonly git?: GitGatewayOptions;
   readonly terminal?: TerminalGatewayOptions;
@@ -432,6 +455,7 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
   const stateStore = options.channels?.stateStore ?? new InMemoryChannelStateStore();
   const sessionIds = options.channels?.sessionIds ?? new Map<string, string>();
   const memories = options.memory?.service ?? new MemoryService(new InMemoryMemoryStore());
+  const usage = options.usage?.service ?? runtime.usage ?? new UsageService(new InMemoryUsageStore());
   const policyEngine = options.security?.engine ?? new PolicyEngine(new InMemoryAuditLog());
   const approvals = options.security?.approvals ?? new ApprovalService(new InMemoryApprovalStore());
   const server = createServer(async (request, response) => {
@@ -582,6 +606,11 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           return sendJson(response, 200, { approval: decided });
         }
         return sendJson(response, 404, { error: 'Approval route not found' });
+      }
+      if (request.method === 'GET' && (pathname === '/usage/summary' || pathname === '/usage/calls')) {
+        const filter = usageFilter(url);
+        if (pathname === '/usage/summary') return sendJson(response, 200, { summary: usage.summary(filter) });
+        return sendJson(response, 200, { calls: usage.list(filter) });
       }
       if (options.git && request.method === 'GET' && pathname === '/git/status') return sendJson(response, 200, await gitStatus(options.git));
       if (options.git && request.method === 'GET' && pathname === '/git/log') return sendJson(response, 200, { commits: await gitLog(options.git, Number(url.searchParams.get('limit') ?? '30')) });

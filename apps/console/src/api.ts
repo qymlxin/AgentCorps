@@ -30,6 +30,26 @@ export interface TerminalResult { readonly command: string; readonly args: strin
 export interface BrowserTab { readonly id: string; readonly title: string; readonly url: string; readonly type: string; }
 export interface BrowserSnapshot { readonly tabId: string; readonly title: string; readonly url: string; readonly text: string; }
 export interface BrowserScreenshot { readonly tabId: string; readonly mimeType: 'image/png'; readonly data: string; }
+export interface UsageRecord {
+  readonly id: string;
+  readonly kind: 'model' | 'tool' | 'protocol';
+  readonly taskId: string;
+  readonly runId: string;
+  readonly toolId: string;
+  readonly model?: string;
+  readonly operation?: string;
+  readonly status: 'succeeded' | 'failed' | 'approval_required' | 'cancelled';
+  readonly startedAt: string;
+  readonly endedAt: string;
+  readonly durationMs: number;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly totalTokens?: number;
+  readonly tokenSource: 'provider' | 'estimated' | 'unknown';
+  readonly error?: string;
+  readonly metadata?: Readonly<Record<string, string | number | boolean>>;
+}
+export interface UsageSummary { readonly kind: UsageRecord['kind']; readonly toolId: string; readonly model?: string; readonly calls: number; readonly succeeded: number; readonly failed: number; readonly approvalRequired: number; readonly cancelled: number; readonly inputTokens: number; readonly outputTokens: number; readonly totalTokens: number; readonly estimatedCalls: number; }
 export interface Connection {
   readonly apiBase: string;
   readonly token: string;
@@ -106,9 +126,15 @@ export class GatewayClient {
   fileContent(path: string, signal?: AbortSignal): Promise<FileContent> {
     return this.request(`/files/content?path=${encodeURIComponent(path)}`, signal ? { signal } : {});
   }
-  gitStatus(signal?: AbortSignal): Promise<GitStatus> {
-    return this.request('/git/status', signal ? { signal } : {});
+  usageSummary(params: { toolId?: string; model?: string; kind?: UsageRecord['kind'] } = {}, signal?: AbortSignal): Promise<{ summary: UsageSummary[] }> {
+    const query = new URLSearchParams();
+    if (params.toolId) query.set('toolId', params.toolId);
+    if (params.model) query.set('model', params.model);
+    if (params.kind) query.set('kind', params.kind);
+    return this.request(`/usage/summary?${query.toString()}`, signal ? { signal } : {});
   }
+  usageCalls(limit = 50, signal?: AbortSignal): Promise<{ calls: UsageRecord[] }> { return this.request(`/usage/calls?limit=${limit}`, signal ? { signal } : {}); }
+  gitStatus(signal?: AbortSignal): Promise<GitStatus> { return this.request('/git/status', signal ? { signal } : {}); }
   gitLog(limit = 20, signal?: AbortSignal): Promise<{ commits: GitCommit[] }> {
     return this.request(`/git/log?limit=${limit}`, signal ? { signal } : {});
   }

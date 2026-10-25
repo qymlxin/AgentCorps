@@ -38,6 +38,7 @@ export interface AgentDescriptor {
   readonly id: string;
   readonly displayName: string;
   readonly version: string;
+  readonly model?: string;
   readonly transport: 'mock' | 'stdio-jsonl' | 'http' | 'acp' | 'a2a';
   readonly capabilities: readonly Capability[];
 }
@@ -61,6 +62,7 @@ export interface TaskCreatedPayload {
 export interface RunStartedPayload {
   readonly runId: RunId;
   readonly agentId: string;
+  readonly model?: string;
 }
 
 export interface RunOutputPayload {

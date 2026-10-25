@@ -17,6 +17,8 @@ import {
   type TaskStatus,
 } from '@agentcorps/domain';
 import { MemoryService, type MemoryRecord } from '@agentcorps/memory';
+import { UsageService, type UsageRecorder, type UsageSpan } from './usage.js';
+export * from './usage.js';
 
 export interface EventStore {
   append(event: TaskEvent): void;
@@ -168,6 +170,10 @@ export interface AgentRequest {
   readonly memory?: readonly MemoryRecord[];
   readonly emit: (text: string, stream?: 'stdout' | 'stderr' | 'assistant') => void;
   readonly emitProtocol?: (event: AgentProtocolEvent) => void;
+  /** Records nested tool/protocol calls without retaining prompt or argument bodies. */
+  readonly usage?: UsageRecorder;
+  /** The high-level model invocation span for this run. */
+  readonly usageSpan?: UsageSpan;
 }
 
 export interface AgentAdapter {
@@ -226,6 +232,7 @@ export interface TaskRuntimeOptions {
   readonly store?: EventStore;
   readonly policy?: Policy;
   readonly memory?: MemoryService;
+  readonly usage?: UsageService;
   readonly recoverInterruptedTasks?: boolean;
 }
 
@@ -233,6 +240,7 @@ export class TaskRuntime {
   readonly store: EventStore;
   readonly policy: Policy;
   readonly memory: MemoryService | undefined;
+  readonly usage: UsageService | undefined;
   private readonly now: () => string;
   private readonly id: (prefix: string) => string;
   private readonly tasks = new Map<TaskId, Task>();
@@ -242,6 +250,7 @@ export class TaskRuntime {
     this.store = options.store ?? new InMemoryEventStore();
     this.policy = options.policy ?? new DefaultPolicy();
     this.memory = options.memory;
+    this.usage = options.usage;
     this.now = options.now ?? (() => new Date().toISOString());
     this.id = options.id ?? ((prefix) => `${prefix}-${crypto.randomUUID()}`);
     this.store.subscribe((event) => this.project(event));
@@ -310,22 +319,35 @@ export class TaskRuntime {
 
     this.changeStatus(task, 'running');
     const runId = this.id('run') as RunId;
-    this.store.append(this.event('run.started', task.id, { runId, agentId: agent.descriptor.id }));
+    this.store.append(this.event('run.started', task.id, { runId, agentId: agent.descriptor.id, ...(agent.descriptor.model ? { model: agent.descriptor.model } : {}) }));
     const controller = new AbortController();
     this.activeRuns.set(taskId, controller);
     const contextMemory = this.memory?.search(task.objective, { workspaceId: task.workspaceId, sessionId: task.sessionId }) ?? [];
+    const usageSpan = this.usage?.start({ kind: 'model', taskId: task.id, runId, toolId: agent.descriptor.id, ...(agent.descriptor.model ? { model: agent.descriptor.model } : {}), operation: 'agent.execute', metadata: { transport: agent.descriptor.transport } });
+    usageSpan?.inputText(task.objective);
+    const usage = this.usage?.forRun(task.id, runId);
     try {
-      await agent.execute({ task: this.tasks.get(taskId)!, runId, signal: controller.signal, ...(contextMemory.length ? { memory: contextMemory } : {}), emit: (text, stream = 'assistant') => {
+      await agent.execute({ task: this.tasks.get(taskId)!, runId, signal: controller.signal, ...(contextMemory.length ? { memory: contextMemory } : {}), ...(usage ? { usage } : {}), ...(usageSpan ? { usageSpan } : {}), emit: (text, stream = 'assistant') => {
+        usageSpan?.outputText(text);
         this.store.append(this.event('run.output', task.id, { runId, text, stream }));
       }, emitProtocol: (protocolEvent) => {
         this.store.append(this.event('run.protocol', task.id, { runId, ...protocolEvent }));
       }});
-      if (this.tasks.get(taskId)?.status !== 'cancelled') this.changeStatus(this.tasks.get(taskId)!, 'succeeded');
-    } catch (error) {
       if (this.tasks.get(taskId)?.status !== 'cancelled') {
-        if (error instanceof ApprovalRequiredError) this.changeStatus(this.tasks.get(taskId)!, 'waiting_approval', error.message);
-        else this.changeStatus(this.tasks.get(taskId)!, 'failed', error instanceof Error ? error.message : String(error));
-      }
+        this.changeStatus(this.tasks.get(taskId)!, 'succeeded');
+        usageSpan?.finish('succeeded');
+      } else usageSpan?.finish('cancelled');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.tasks.get(taskId)?.status !== 'cancelled') {
+        if (error instanceof ApprovalRequiredError) {
+          this.changeStatus(this.tasks.get(taskId)!, 'waiting_approval', message);
+          usageSpan?.finish('approval_required', message);
+        } else {
+          this.changeStatus(this.tasks.get(taskId)!, 'failed', message);
+          usageSpan?.finish('failed', message);
+        }
+      } else usageSpan?.finish('cancelled', message);
     } finally {
       this.activeRuns.delete(taskId);
     }

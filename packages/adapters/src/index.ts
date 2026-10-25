@@ -20,6 +20,7 @@ export interface JsonlAgentOptions {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly model?: string;
   readonly version?: string;
   readonly capabilities?: AgentDescriptor['capabilities'];
   readonly timeoutMs?: number;
@@ -77,6 +78,7 @@ export class JsonlAgentAdapter implements AgentAdapter {
       id: options.id,
       displayName: options.displayName,
       version: options.version ?? 'unknown',
+      ...(options.model ? { model: options.model } : {}),
       transport: 'stdio-jsonl',
       capabilities: options.capabilities ?? [],
     };
@@ -190,6 +192,7 @@ export interface McpAgentAdapterOptions {
   readonly capabilityFor?: (tool: McpTool) => SecurityCapability;
   readonly argumentsFor?: (request: AgentRequest) => Record<string, unknown>;
   readonly approvalId?: string | ((request: AgentRequest) => string | undefined);
+  readonly model?: string;
   readonly version?: string;
   readonly capabilities?: AgentDescriptor['capabilities'];
 }
@@ -207,6 +210,7 @@ export class McpAgentAdapter implements AgentAdapter {
       id: options.id,
       displayName: options.displayName,
       version: options.version ?? 'unprobed',
+      ...(options.model ? { model: options.model } : {}),
       transport: 'stdio-jsonl',
       capabilities: options.capabilities ?? [],
     };
@@ -226,14 +230,25 @@ export class McpAgentAdapter implements AgentAdapter {
     const arguments_ = this.options.argumentsFor?.(request) ?? { input: request.task.objective };
     const approvalId = typeof this.options.approvalId === 'function' ? this.options.approvalId(request) : this.options.approvalId;
     const tool = await this.resolveTool(request);
-    const result = await executor.callTool(request.task.id, tool, arguments_, approvalId, this.pendingRequests.get(request.task.id), request.signal);
-    if (result.status === 'approval_required') {
-      this.pendingRequests.set(request.task.id, result.requestId);
-      throw new ApprovalRequiredError(result.approvalId!);
+    const usageSpan = request.usage?.start({ kind: 'tool', toolId: this.descriptor.id, operation: `mcp.tools/call:${tool.name}`, metadata: { protocol: 'mcp', tool: tool.name } });
+    usageSpan?.inputText(JSON.stringify(arguments_));
+    try {
+      const result = await executor.callTool(request.task.id, tool, arguments_, approvalId, this.pendingRequests.get(request.task.id), request.signal);
+      if (result.status === 'approval_required') {
+        this.pendingRequests.set(request.task.id, result.requestId);
+        usageSpan?.finish('approval_required');
+        throw new ApprovalRequiredError(result.approvalId!);
+      }
+      this.pendingRequests.delete(request.task.id);
+      if (request.signal.aborted) throw abortError();
+      usageSpan?.outputText(JSON.stringify(result.result));
+      usageSpan?.finish('succeeded');
+      request.emit(JSON.stringify(result.result), 'assistant');
+    } catch (error) {
+      if (error instanceof ApprovalRequiredError) throw error;
+      usageSpan?.finish(request.signal.aborted ? 'cancelled' : 'failed', error instanceof Error ? error.message : String(error));
+      throw error;
     }
-    this.pendingRequests.delete(request.task.id);
-    if (request.signal.aborted) throw abortError();
-    request.emit(JSON.stringify(result.result), 'assistant');
   }
 
   private async resolveTool(request: AgentRequest): Promise<McpTool> {
@@ -264,6 +279,7 @@ export interface A2AAgentAdapterOptions {
   readonly displayName: string;
   readonly client?: A2AClient;
   readonly clientOptions?: A2AClientOptions;
+  readonly model?: string;
   readonly version?: string;
   readonly capabilities?: AgentDescriptor['capabilities'];
 }
@@ -279,6 +295,7 @@ export class A2AAgentAdapter implements AgentAdapter {
       id: options.id,
       displayName: options.displayName,
       version: options.version ?? 'unprobed',
+      ...(options.model ? { model: options.model } : {}),
       transport: 'a2a',
       capabilities: options.capabilities ?? [],
     };
@@ -287,11 +304,20 @@ export class A2AAgentAdapter implements AgentAdapter {
   async execute(request: AgentRequest): Promise<void> {
     if (request.signal.aborted) throw abortError();
     const prompt = buildAgentPrompt(request);
+    const usageSpan = request.usage?.start({ kind: 'protocol', toolId: this.descriptor.id, ...(this.descriptor.model ? { model: this.descriptor.model } : {}), operation: 'a2a.message/send', metadata: { protocol: 'a2a' } });
+    usageSpan?.inputText(prompt);
     request.emitProtocol?.({ protocol: 'a2a', direction: 'request', method: 'message/send', metadata: { contextId: request.task.sessionId, textLength: prompt.length } });
-    const result = await this.client.sendMessage(prompt, request.task.sessionId);
-    request.emitProtocol?.({ protocol: 'a2a', direction: 'response', method: 'message/send', metadata: { taskId: result.id ?? '', status: typeof result.status?.state === 'string' ? result.status.state : 'received' } });
-    if (request.signal.aborted) throw abortError();
-    request.emit(JSON.stringify(result), 'assistant');
+    try {
+      const result = await this.client.sendMessage(prompt, request.task.sessionId);
+      usageSpan?.outputText(JSON.stringify(result));
+      usageSpan?.finish('succeeded');
+      request.emitProtocol?.({ protocol: 'a2a', direction: 'response', method: 'message/send', metadata: { taskId: result.id ?? '', status: typeof result.status?.state === 'string' ? result.status.state : 'received' } });
+      if (request.signal.aborted) throw abortError();
+      request.emit(JSON.stringify(result), 'assistant');
+    } catch (error) {
+      usageSpan?.finish(request.signal.aborted ? 'cancelled' : 'failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }
 }
 
@@ -299,6 +325,7 @@ export interface AcpAgentAdapterOptions {
   readonly id: string;
   readonly displayName: string;
   readonly clientOptions: AcpClientOptions;
+  readonly model?: string;
   readonly version?: string;
   readonly capabilities?: AgentDescriptor['capabilities'];
 }
@@ -326,6 +353,7 @@ export class AcpAgentAdapter implements AgentAdapter {
       id: options.id,
       displayName: options.displayName,
       version: options.version ?? 'unprobed',
+      ...(options.model ? { model: options.model } : {}),
       transport: 'acp',
       capabilities: options.capabilities ?? [],
     };
@@ -383,6 +411,7 @@ export interface CommandAgentOptions {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly model?: string;
   readonly version?: string;
   readonly capabilities?: AgentDescriptor['capabilities'];
   readonly timeoutMs?: number;
@@ -431,6 +460,7 @@ export class CommandAgentAdapter implements AgentAdapter {
       id: options.id,
       displayName: options.displayName,
       version: options.version ?? 'unprobed',
+      ...(options.model ? { model: options.model } : {}),
       transport: 'stdio-jsonl',
       capabilities: options.capabilities ?? [],
     };

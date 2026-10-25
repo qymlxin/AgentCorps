@@ -13,7 +13,7 @@ import { SqliteChannelStateStore } from '@agentcorps/channels';
 import { JsonlMemoryStore, migrateMemoryStore, MemoryService, SqliteMemoryStore } from '@agentcorps/memory';
 import { DeviceTokenVerifier, ExternalIdentityResolver, SignedAccessTokenService, SqliteApprovalStore, SqliteAuditLog, PolicyEngine, ApprovalService, createDefaultProfile, isWithin, SqliteDeviceIdentityStore, SqliteExternalIdentityBindingStore, type ChannelKind, type DeviceIdentity, type ExternalIdentityRole } from '@agentcorps/security';
 import { JsonlSessionStore, migrateSessionStore, SessionService, SqliteSessionStore } from '@agentcorps/session';
-import { MockAgent, SqliteEventStore, TaskRuntime, ApprovalRequiredError } from '@agentcorps/runtime';
+import { MockAgent, SqliteEventStore, SqliteUsageStore, TaskRuntime, UsageService, ApprovalRequiredError } from '@agentcorps/runtime';
 
 function usage(): never {
   console.error(`AgentCorps CLI 0.1.0
@@ -45,6 +45,8 @@ Commands:
        [--workspace-id ID] [--session-id ID] [--include-sensitive]
   memory list                              List exported memories
   memory delete MEMORY_ID                 Soft-delete a memory
+  usage summary [--from ISO] [--to ISO] [--tool ID] [--model MODEL] [--kind model|tool|protocol]
+  usage calls [--limit N] [--task-id ID] [--run-id ID] [--status STATUS]  List invocation records
   data migrate [--data-dir PATH]          Migrate legacy JSONL sessions and memory
   data export --output PATH               Export events, sessions, messages, and memories
   data backup --output PATH                Copy the SQLite database to a backup file
@@ -166,14 +168,14 @@ function unconfiguredAgentForRun(roleConfigured = false): AgentAdapter {
   const controls = agentControlConfig(selected);
   const command = flag('--agent-command') ?? configured.command;
   const args = options().has('--agent-arg') ? repeatedFlag('--agent-arg') : configured.args;
+  const model = flag('--model') ?? configured.model ?? agentCorpsConfig().defaults?.model;
   if (selected === 'mock') return new MockAgent();
   if (selected === 'command') {
     if (!command) throw new Error('--agent-command or tools.command is required for --agent command');
     const sandbox = commandSandbox(controls.cwd, controls.workspaceRoot, configured.sandbox);
-    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, ...(args ? { args } : {}), outputFormat: 'text', promptPlacement: 'argument', cwd: controls.cwd, ...(configured.env ? { env: configured.env } : {}), ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }), ...(sandbox ? { sandbox } : {}) });
+    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, ...(args ? { args } : {}), outputFormat: 'text', promptPlacement: 'argument', cwd: controls.cwd, ...(model ? { model } : {}), ...(configured.env ? { env: configured.env } : {}), ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }), ...(sandbox ? { sandbox } : {}) });
   }
   const sandbox = commandSandbox(controls.cwd, controls.workspaceRoot);
-  const model = flag('--model') ?? configured.model ?? agentCorpsConfig().defaults?.model;
   return agentTools().create(selected, {
     ...(command ? { command } : {}), ...(args ? { args } : {}), cwd: controls.cwd,
     ...(configured.env ? { env: configured.env } : {}),
@@ -314,7 +316,8 @@ function provisionDevice(label: string, dataDir = dataDirectory()): DeviceIdenti
 }
 
 function runtime(memory = memoryService()): TaskRuntime {
-  return new TaskRuntime({ store: new SqliteEventStore(join(dataDirectory(), 'agentcorps.db')), memory });
+  const databasePath = join(dataDirectory(), 'agentcorps.db');
+  return new TaskRuntime({ store: new SqliteEventStore(databasePath), usage: new UsageService(new SqliteUsageStore(databasePath)), memory });
 }
 
 function memoryService(): MemoryService {
@@ -617,6 +620,28 @@ async function main(): Promise<void> {
       return;
     }
     usage();
+  }
+
+  if (command === 'usage') {
+    const action = process.argv[3];
+    const service = new UsageService(new SqliteUsageStore(deviceDatabasePath()));
+    try {
+      const filter = {
+        ...(flag('--from') ? { from: flag('--from')! } : {}),
+        ...(flag('--to') ? { to: flag('--to')! } : {}),
+        ...(flag('--task-id') ? { taskId: flag('--task-id')! } : {}),
+        ...(flag('--run-id') ? { runId: flag('--run-id')! } : {}),
+        ...(flag('--tool') ? { toolId: flag('--tool')! } : {}),
+        ...(flag('--model') ? { model: flag('--model')! } : {}),
+        ...(flag('--kind') ? { kind: flag('--kind') as 'model' | 'tool' | 'protocol' } : {}),
+        ...(flag('--status') ? { status: flag('--status') as 'succeeded' | 'failed' | 'approval_required' | 'cancelled' } : {}),
+        ...(flag('--limit') ? { limit: Number(flag('--limit')) } : {}),
+      };
+      if (action === 'summary') console.log(JSON.stringify(service.summary(filter), null, 2));
+      else if (action === 'calls' || action === 'logs') console.log(JSON.stringify(service.list(filter), null, 2));
+      else usage();
+    } finally { service.close(); }
+    return;
   }
 
   if (command !== 'task') usage();

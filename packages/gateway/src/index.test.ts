@@ -5,13 +5,31 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { listenGateway } from './index.js';
-import { TaskRuntime } from '@agentcorps/runtime';
+import { TaskRuntime, UsageService, InMemoryUsageStore } from '@agentcorps/runtime';
 import { signHmacSha256, encryptWecomMessage, signWecomCallback, parseWecomEncryptedInbound } from '@agentcorps/channels';
 import { createDefaultProfile, DevicePairingService, DeviceTokenVerifier, ExternalIdentityResolver, InMemoryDeviceIdentityStore, InMemoryExternalIdentityBindingStore, SignedAccessTokenService } from '@agentcorps/security';
 
 const gitAsync = promisify(execFile);
 
 describe('gateway', () => {
+  it('exposes usage summaries and invocation logs with read access', async () => {
+    const usage = new UsageService(new InMemoryUsageStore(), () => '2026-10-26T00:00:00.000Z', (prefix) => `${prefix}-1`);
+    const runtime = new TaskRuntime({ usage, now: () => '2026-10-26T00:00:00.000Z', id: (prefix) => `${prefix}-1` });
+    const server = await listenGateway(runtime, 0);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      const task = runtime.createTask({ workspaceId: 'ws', sessionId: 's', title: 'usage', objective: 'record usage', mode: 'code' });
+      await runtime.runTask(task.id, { descriptor: { id: 'codex', displayName: 'Codex', version: '1', model: 'gpt-5', transport: 'mock', capabilities: [] }, async execute(request) { request.emit('answer'); } });
+      const summary = await fetch(`${base}/usage/summary?toolId=codex&model=gpt-5`);
+      expect(summary.status).toBe(200);
+      expect(await summary.json()).toMatchObject({ summary: [{ toolId: 'codex', model: 'gpt-5', calls: 1, succeeded: 1 }] });
+      const calls = await fetch(`${base}/usage/calls?limit=10`);
+      expect(await calls.json()).toMatchObject({ calls: [{ kind: 'model', taskId: task.id, runId: 'run-1' }] });
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+  });
+
   it('exposes health, task creation, and task event history', async () => {
     const server = await listenGateway(new TaskRuntime(), 0);
     const address = server.address();
