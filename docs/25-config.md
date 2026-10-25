@@ -33,8 +33,22 @@ AgentCorps 从 `~/.agentcorps/config.json` 自动读取本地配置。也可以�
     "kimi": {
       "command": "kimi",
       "cwd": "~/workspace",
-      "timeoutMs": 600000
+      "timeoutMs": 600000,
+      "sandbox": {
+        "backend": "container",
+        "containerImage": "node:22-bookworm",
+        "network": "none",
+        "maxMemoryMb": 1024,
+        "maxCpu": 2,
+        "maxPids": 128
+      }
     }
+  },
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 43210,
+    "corsOrigin": "http://127.0.0.1:4173",
+    "identityRequired": false
   },
   "git": {
     "allowWrite": true,
@@ -86,6 +100,7 @@ AgentCorps 从 `~/.agentcorps/config.json` 自动读取本地配置。也可以�
 - `cwd` 只设置 Agent 子进程的工作目录；终端、Git、浏览器等高风险能力仍须经过独立的策略和审批检查。
 - `paths.workspaceRoot` 作为桌面文件浏览和 Git Gateway 的默认工作区边界；Git 写入还需要 `git.allowWrite: true`，并默认要求 `git.requireApproval: true`。
 - `browser` 配置控制 DevTools 端点、浏览器控制开关、审批模式、网络模式和目标主机白名单；浏览器控制还会经过 Gateway 安全策略。
+- `gateway` 配置控制 `serve` 的监听地址、端口、跨域来源和外部身份要求；访问令牌可以通过配置表达，但生产部署应优先使用受保护的环境或设备令牌管理。
 
 ## 设计图
 

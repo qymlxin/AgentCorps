@@ -169,7 +169,7 @@ function unconfiguredAgentForRun(roleConfigured = false): AgentAdapter {
   if (selected === 'mock') return new MockAgent();
   if (selected === 'command') {
     if (!command) throw new Error('--agent-command or tools.command is required for --agent command');
-    const sandbox = commandSandbox(controls.cwd, controls.workspaceRoot);
+    const sandbox = commandSandbox(controls.cwd, controls.workspaceRoot, configured.sandbox);
     return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, ...(args ? { args } : {}), outputFormat: 'text', promptPlacement: 'argument', cwd: controls.cwd, ...(configured.env ? { env: configured.env } : {}), ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }), ...(sandbox ? { sandbox } : {}) });
   }
   const sandbox = commandSandbox(controls.cwd, controls.workspaceRoot);
@@ -184,15 +184,18 @@ function unconfiguredAgentForRun(roleConfigured = false): AgentAdapter {
   });
 }
 
-function commandSandbox(cwd?: string, workspaceRoot?: string): CommandAgentOptions['sandbox'] {
-  const backend = flag('--sandbox-backend');
+function commandSandbox(cwd?: string, workspaceRoot?: string, configured?: AgentRuntimeConfig['sandbox']): CommandAgentOptions['sandbox'] {
+  const backend = flag('--sandbox-backend') ?? configured?.backend;
   if (!backend) return undefined;
   if (backend !== 'macos' && backend !== 'container') throw new Error('--sandbox-backend must be macos or container');
-  if (backend === 'container' && !flag('--container-image')) throw new Error('--container-image is required for container sandboxing');
+  const containerImage = flag('--container-image') ?? configured?.containerImage;
+  if (backend === 'container' && !containerImage) throw new Error('--container-image is required for container sandboxing');
+  const network = flag('--sandbox-network') ?? configured?.network ?? 'none';
+  if (network !== 'none' && network !== 'full') throw new Error('--sandbox-network must be none or full');
   return {
-    backend, workspaceRoot: resolveConfiguredPath(workspaceRoot ?? cwd ?? process.cwd()), network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
-    ...(flag('--container-image') ? { containerImage: flag('--container-image')! } : {}),
-    maxMemoryMb: Number(flag('--sandbox-memory-mb') ?? '1024'), maxCpu: Number(flag('--sandbox-cpu') ?? '2'), maxPids: Number(flag('--sandbox-pids') ?? '128'),
+    backend, workspaceRoot: resolveConfiguredPath(workspaceRoot ?? cwd ?? process.cwd()), network,
+    ...(containerImage ? { containerImage } : {}),
+    maxMemoryMb: Number(flag('--sandbox-memory-mb') ?? configured?.maxMemoryMb ?? '1024'), maxCpu: Number(flag('--sandbox-cpu') ?? configured?.maxCpu ?? '2'), maxPids: Number(flag('--sandbox-pids') ?? configured?.maxPids ?? '128'),
   };
 }
 
@@ -521,17 +524,19 @@ async function main(): Promise<void> {
   }
 
   if (command === 'serve') {
-    const port = Number(flag('--port') ?? '43210');
-    const host = flag('--host') ?? '127.0.0.1';
-    const token = flag('--token');
-    const readOnlyToken = flag('--read-only-token');
+    const gatewayConfig = agentCorpsConfig().gateway;
+    const port = Number(flag('--port') ?? gatewayConfig?.port ?? '43210');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('--port must be between 1 and 65535');
+    const host = flag('--host') ?? gatewayConfig?.host ?? '127.0.0.1';
+    const token = flag('--token') ?? gatewayConfig?.token;
+    const readOnlyToken = flag('--read-only-token') ?? gatewayConfig?.readOnlyToken;
     if (host !== '127.0.0.1' && host !== 'localhost' && !token && !readOnlyToken) throw new Error('Remote gateway binding requires --token or --read-only-token');
     const dataDir = dataDirectory();
     const workspaceRoot = resolveConfiguredPath(flag('--workspace-root') ?? agentCorpsConfig().paths?.workspaceRoot ?? process.cwd());
-    const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? undefined : undefined);
+    const corsOrigin = flag('--cors-origin') ?? gatewayConfig?.corsOrigin;
     const memories = memoryService();
     const deviceServices = token ? undefined : deviceAuth(dataDir);
-    const identityRequired = hasFlag('--identity-required');
+    const identityRequired = hasFlag('--identity-required') || gatewayConfig?.identityRequired === true;
     const bindings = identityRequired ? identityStore(dataDir) : undefined;
     const identityResolver = bindings ? new ExternalIdentityResolver(bindings) : undefined;
     const channelState = new SqliteChannelStateStore(deviceDatabasePath(dataDir));

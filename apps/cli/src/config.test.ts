@@ -34,6 +34,17 @@ describe('AgentCorps configuration', () => {
     }
   });
 
+  it('loads gateway, browser, and per-agent sandbox settings', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-config-complete-'));
+    try {
+      const path = join(directory, 'config.json');
+      writeFileSync(path, JSON.stringify({ version: 1, gateway: { host: '127.0.0.1', port: 43210, corsOrigin: 'http://127.0.0.1:4173', identityRequired: true }, browser: { endpoint: 'http://127.0.0.1:9222', allowControl: true, requireApproval: true, network: 'allowlist', allowedHosts: ['example.com'] }, tools: { command: { command: 'node', sandbox: { backend: 'container', containerImage: 'node:22', network: 'none', maxMemoryMb: 512 } } } }));
+      const config = loadAgentCorpsConfig(path);
+      expect(config.gateway?.port).toBe(43210);
+      expect(config.browser?.allowedHosts).toEqual(['example.com']);
+      expect(config.tools?.command?.sandbox?.backend).toBe('container');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
   it('expands home-relative paths and resolves relative paths from the launch directory', () => {
     const home = '/tmp/agentcorps-home';
     expect(resolveConfiguredPath('~/workspace', home, '/tmp/project')).toBe('/tmp/agentcorps-home/workspace');
