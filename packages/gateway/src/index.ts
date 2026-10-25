@@ -30,6 +30,7 @@ import {
 } from '@agentcorps/channels';
 
 import { gitAdd, gitCommit, gitDiff, gitLog, gitRestoreStaged, gitStatus, type GitGatewayOptions } from './git.js';
+import { terminalExec, validateTerminalCwd, type TerminalGatewayOptions } from './terminal.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -181,6 +182,7 @@ export interface GatewayOptions {
   readonly memory?: MemoryGatewayOptions;
   readonly files?: FileGatewayOptions;
   readonly git?: GitGatewayOptions;
+  readonly terminal?: TerminalGatewayOptions;
   readonly security?: SecurityGatewayOptions;
   readonly agentFactory?: (task: import('@agentcorps/domain').Task) => AgentAdapter;
 }
@@ -388,6 +390,23 @@ function authorizeGitMutation(options: GatewayOptions, policyEngine: PolicyEngin
   return { allowed: false, status: 202, body: { decision: policy.decision, policy, approval: approvals.create(request, policy) } };
 }
 
+function authorizeTerminal(options: GatewayOptions, policyEngine: PolicyEngine, approvals: ApprovalService, command: string, taskId: string, approvalId?: string): GitMutationAuthorization {
+  if (!options.terminal?.allowExec) return { allowed: false, status: 403, body: { error: 'Terminal execution is disabled' } };
+  if (options.terminal.requireApproval !== false && !options.security) return { allowed: false, status: 503, body: { error: 'Terminal execution requires an explicit security context' } };
+  if (!taskId.trim()) throw new Error('Terminal execution requires a taskId');
+  if (approvalId) {
+    const approval = approvals.get(approvalId);
+    if (!approval || approval.status !== 'approved' || approval.request.taskId !== taskId || approval.request.command !== command) return { allowed: false, status: 409, body: { error: 'Terminal approval is missing, expired, or does not match this operation' } };
+    return approvals.consume(approvalId) ? { allowed: true } : { allowed: false, status: 409, body: { error: 'Terminal approval could not be consumed' } };
+  }
+  if (options.terminal.requireApproval === false) return { allowed: true };
+  const request: ToolRequest = { requestId: `terminal:${crypto.randomUUID()}`, taskId, capability: 'process.exec', command };
+  const policy = policyEngine.evaluate(request, options.security!.context);
+  if (policy.decision === 'deny') return { allowed: false, status: 403, body: { decision: policy.decision, policy } };
+  if (policy.decision === 'allow') return { allowed: true };
+  return { allowed: false, status: 202, body: { decision: policy.decision, policy, approval: approvals.create(request, policy) } };
+}
+
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
   const adapters = { ...defaultChannelAdapters(), ...options.channels?.adapters };
   const stateStore = options.channels?.stateStore ?? new InMemoryChannelStateStore();
@@ -559,6 +578,19 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
         if (pathname === '/git/unstage') return sendJson(response, 200, await gitRestoreStaged(options.git, paths));
         return sendJson(response, 200, await gitCommit(options.git, String(body.message)));
       }
+      if (options.terminal && request.method === 'POST' && pathname === '/terminal/exec') {
+        const body = await readJson(request);
+        const command = String(body.command ?? '');
+        const args = body.args === undefined ? [] : Array.isArray(body.args) ? body.args.map(String) : (() => { throw new Error('Terminal args must be an array'); })();
+        const taskId = String(body.taskId ?? '');
+        const cwd = body.cwd === undefined ? undefined : String(body.cwd);
+        const timeoutMs = body.timeoutMs === undefined ? undefined : Number(body.timeoutMs);
+        await validateTerminalCwd(options.terminal, cwd);
+        const approvalCommand = `terminal ${JSON.stringify([command, ...args])}`;
+        const authorization = authorizeTerminal(options, policyEngine, approvals, approvalCommand, taskId, body.approvalId ? String(body.approvalId) : undefined);
+        if (!authorization.allowed) return sendJson(response, authorization.status ?? 409, authorization.body ?? { error: 'Terminal operation was not authorized' });
+        return sendJson(response, 200, await terminalExec(options.terminal, command, args, cwd, timeoutMs));
+      }
       if (options.files && request.method === 'GET' && pathname === '/files') {
         return sendJson(response, 200, await listFiles(options.files, url.searchParams.get('path')));
       }
@@ -693,3 +725,5 @@ export function listenGateway(runtime: TaskRuntime, port = 43210, host = '127.0.
 
 export { gitAdd, gitCommit, gitDiff, gitLog, gitRestoreStaged, gitStatus } from './git.js';
 export type { GitCommit, GitGatewayOptions, GitStatus, GitStatusEntry } from './git.js';
+export { terminalExec, validateTerminalCwd } from './terminal.js';
+export type { TerminalGatewayOptions, TerminalResult } from './terminal.js';

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -310,7 +310,7 @@ describe('gateway', () => {
       const pending = await fetch(`${base}/git/stage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'git-task', paths: ['README.md'] }) });
       expect(pending.status).toBe(202);
       const approval = (await pending.json() as { approval: { id: string } }).approval;
-      await fetch(`${base}/approvals/${approval.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decidedBy: 'test-user' }) });
+      expect((await fetch(`${base}/approvals/${approval.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decidedBy: 'test-user' }) })).status).toBe(200);
       const staged = await fetch(`${base}/git/stage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'git-task', paths: ['README.md'], approvalId: approval.id }) });
       expect((await staged.json() as { entries: Array<{ index: string }> }).entries[0]?.index).toBe('M');
       const commitPending = await fetch(`${base}/git/commit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'git-task', message: 'change README' }) });
@@ -322,6 +322,28 @@ describe('gateway', () => {
       expect((await committed.json() as { hash: string; status: { entries: unknown[] } }).hash).toMatch(/^[0-9a-f]+$/);
       const finalStatus = await (await fetch(`${base}/git/status`)).json() as { entries: unknown[] };
       expect(finalStatus.entries).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes terminal commands without a shell after approval and preserves the workspace cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentcorps-terminal-'));
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { terminal: { root, allowExec: true }, security: { context: { mode: 'code', profile: createDefaultProfile(root, 'S2') } } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const request = { taskId: 'terminal-task', command: process.execPath, args: ['-e', 'process.stdout.write(process.cwd())'], cwd: '.' };
+    try {
+      const pending = await fetch(`${base}/terminal/exec`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+      expect(pending.status).toBe(202);
+      const approval = (await pending.json() as { approval: { id: string } }).approval;
+      expect((await fetch(`${base}/approvals/${approval.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decidedBy: 'test-user' }) })).status).toBe(200);
+      const result = await fetch(`${base}/terminal/exec`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...request, approvalId: approval.id }) });
+      expect(result.status).toBe(200);
+      expect(await result.json()).toMatchObject({ command: process.execPath, stdout: realpathSync(root), exitCode: 0, timedOut: false });
+      expect((await fetch(`${base}/terminal/exec`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...request, cwd: '../' }) })).status).toBe(400);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       rmSync(root, { recursive: true, force: true });

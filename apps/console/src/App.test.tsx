@@ -23,6 +23,7 @@ function gateway() {
     if (url.pathname === '/git/status') return Response.json({ branch: 'main', entries: [{ index: ' ', worktree: 'M', path: 'README.md' }] });
     if (url.pathname === '/git/log') return Response.json({ commits: [{ hash: 'abcdef1234567890', author: 'AgentCorps', committedAt: session.createdAt, subject: 'initial' }] });
     if (url.pathname === '/git/diff') return Response.json({ path: 'README.md', diff: '-hello\\n+changed' });
+    if (url.pathname === '/terminal/exec') return Response.json({ command: 'node', args: [], cwd: '/workspace', stdout: 'v22', stderr: '', exitCode: 0, timedOut: false });
     if (url.pathname === '/approvals') return Response.json({ approvals: [{ id: 'approval-1', request: { capability: 'shell.execute', command: 'git status' }, reason: 'Review command', status: 'pending' }] });
     return Response.json({ ok: true });
   });
@@ -72,6 +73,18 @@ describe('React management console', () => {
     expect(JSON.parse(String(fetcher.mock.calls.find(([url]) => String(url).endsWith('/git/stage'))?.[1]?.body))).toMatchObject({ paths: ['README.md'], taskId: 'console-git' });
   });
 
+
+  it('runs a workspace terminal command through the approval-aware client', async () => {
+    const fetcher = gateway();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(task.title);
+    await user.click(screen.getByRole('button', { name: 'Terminal' }));
+    await user.type(screen.getByLabelText('COMMAND'), 'node');
+    await user.click(screen.getByRole('button', { name: 'Run command →' }));
+    expect(await screen.findByText('v22')).toBeTruthy();
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/terminal/exec'))).toBe(true);
+  });
 
   it('opens the task dialog, command palette, and views from keyboard shortcuts', async () => {
     gateway();

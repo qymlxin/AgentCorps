@@ -25,6 +25,8 @@ describe('AgentCorps configuration', () => {
       expect(() => loadAgentCorpsConfig(path)).toThrow('timeoutMs must be a positive integer');
       writeFileSync(path, JSON.stringify({ version: 1, git: { allowWrite: 'yes' } }));
       expect(() => loadAgentCorpsConfig(path)).toThrow('git.allowWrite and git.requireApproval must be booleans');
+      writeFileSync(path, JSON.stringify({ version: 1, terminal: { defaultTimeoutMs: 700000 } }));
+      expect(() => loadAgentCorpsConfig(path)).toThrow('terminal.allowExec, terminal.requireApproval, and terminal.defaultTimeoutMs are invalid');
       writeFileSync(path, '{');
       expect(() => loadAgentCorpsConfig(path)).toThrow('Invalid AgentCorps JSON configuration');
     } finally {

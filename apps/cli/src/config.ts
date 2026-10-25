@@ -35,6 +35,7 @@ export interface AgentCorpsConfig {
   readonly toolDefinitions?: readonly AgentToolDefinition[];
   readonly roles?: Readonly<Record<string, CustomRoleConfig>>;
   readonly git?: { readonly allowWrite?: boolean; readonly requireApproval?: boolean };
+  readonly terminal?: { readonly allowExec?: boolean; readonly requireApproval?: boolean; readonly defaultTimeoutMs?: number };
 }
 
 export const defaultConfigPath = (home = homedir()): string => join(home, '.agentcorps', 'config.json');
@@ -63,7 +64,7 @@ export function roleFromConfig(id: string, config: AgentCorpsConfig): RolePreset
 
 function validateConfig(value: unknown, path: string): AgentCorpsConfig {
   if (!isRecord(value) || value.version !== 1) throw new Error(`AgentCorps configuration must contain version: 1: ${path}`);
-  const allowed = new Set(['version', 'paths', 'defaults', 'tools', 'toolDefinitions', 'roles', 'git']);
+  const allowed = new Set(['version', 'paths', 'defaults', 'tools', 'toolDefinitions', 'roles', 'git', 'terminal']);
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(`Unknown field in AgentCorps configuration: ${path}`);
   if (value.paths !== undefined) validatePaths(value.paths, path);
   if (value.defaults !== undefined) validateDefaults(value.defaults, path);
@@ -71,6 +72,7 @@ function validateConfig(value: unknown, path: string): AgentCorpsConfig {
   if (value.toolDefinitions !== undefined && (!Array.isArray(value.toolDefinitions) || value.toolDefinitions.some((entry) => !isRecord(entry)))) throw new Error(`toolDefinitions must be an array of tool definitions: ${path}`);
   if (value.roles !== undefined) validateRoles(value.roles, path);
   if (value.git !== undefined) validateGit(value.git, path);
+  if (value.terminal !== undefined) validateTerminal(value.terminal, path);
   return value as unknown as AgentCorpsConfig;
 }
 
@@ -112,6 +114,10 @@ function validateRoles(value: unknown, path: string): void {
 
 function validateGit(value: unknown, path: string): void {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'allowWrite' && key !== 'requireApproval') || (value.allowWrite !== undefined && typeof value.allowWrite !== 'boolean') || (value.requireApproval !== undefined && typeof value.requireApproval !== 'boolean')) throw new Error(`git.allowWrite and git.requireApproval must be booleans: ${path}`);
+}
+
+function validateTerminal(value: unknown, path: string): void {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'allowExec' && key !== 'requireApproval' && key !== 'defaultTimeoutMs') || (value.allowExec !== undefined && typeof value.allowExec !== 'boolean') || (value.requireApproval !== undefined && typeof value.requireApproval !== 'boolean') || (value.defaultTimeoutMs !== undefined && (!Number.isInteger(value.defaultTimeoutMs) || value.defaultTimeoutMs < 1 || value.defaultTimeoutMs > 600000))) throw new Error(`terminal.allowExec, terminal.requireApproval, and terminal.defaultTimeoutMs are invalid: ${path}`);
 }
 
 function isRecord(value: unknown): value is Record<string, any> { return value !== null && typeof value === 'object' && !Array.isArray(value); }

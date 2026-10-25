@@ -24,6 +24,7 @@ export function ShortcutOverlay({ mode, onAction, onClose }: {
         <PaletteAction label="Event stream" keys="3" action="events" onAction={onAction}>Inspect replayable runtime events.</PaletteAction>
         <PaletteAction label="Files" keys="4" action="files" onAction={onAction}>Browse the configured workspace safely.</PaletteAction>
         <PaletteAction label="Git" keys="5" action="git" onAction={onAction}>Review changes and request Git operations.</PaletteAction>
+        <PaletteAction label="Terminal" keys="6" action="terminal" onAction={onAction}>Run a command inside the workspace after approval.</PaletteAction>
         <PaletteAction label="Refresh data" keys="R" action="refresh" onAction={onAction}>Fetch the latest runtime snapshot.</PaletteAction>
       </div>
     </section>

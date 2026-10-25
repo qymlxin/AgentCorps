@@ -25,6 +25,7 @@ export interface GitCommit { readonly hash: string; readonly author: string; rea
 export interface GitCommitResult { readonly hash: string; readonly status: GitStatus; }
 export interface GitApprovalResult { readonly decision: 'approval_required'; readonly approval: Approval; }
 export type GitMutationResult = GitStatus | GitCommitResult | GitApprovalResult;
+export interface TerminalResult { readonly command: string; readonly args: string[]; readonly cwd: string; readonly stdout: string; readonly stderr: string; readonly exitCode: number | null; readonly signal?: string; readonly timedOut: boolean; }
 export interface Connection {
   readonly apiBase: string;
   readonly token: string;
@@ -114,6 +115,9 @@ export class GatewayClient {
   }
   gitCommit(message: string, taskId = 'console-git', approvalId?: string): Promise<GitMutationResult> {
     return this.request('/git/commit', { method: 'POST', body: JSON.stringify({ message, taskId, ...(approvalId ? { approvalId } : {}) }) });
+  }
+  terminalExec(command: string, args: string[] = [], taskId = 'console-terminal', approvalId?: string): Promise<TerminalResult | GitApprovalResult> {
+    return this.request('/terminal/exec', { method: 'POST', body: JSON.stringify({ command, args, taskId, ...(approvalId ? { approvalId } : {}) }) });
   }
   session(id: string, signal?: AbortSignal): Promise<{ session: Session; messages: SessionMessage[] }> {
     return this.request(`/sessions/${encodeURIComponent(id)}`, signal ? { signal } : {});
