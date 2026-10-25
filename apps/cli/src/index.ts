@@ -11,9 +11,9 @@ import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
 import { SqliteChannelStateStore } from '@agentcorps/channels';
 import { JsonlMemoryStore, migrateMemoryStore, MemoryService, SqliteMemoryStore } from '@agentcorps/memory';
-import { DeviceTokenVerifier, ExternalIdentityResolver, SignedAccessTokenService, SqliteApprovalStore, SqliteAuditLog, PolicyEngine, ApprovalService, createDefaultProfile, SqliteDeviceIdentityStore, SqliteExternalIdentityBindingStore, type ChannelKind, type DeviceIdentity, type ExternalIdentityRole } from '@agentcorps/security';
+import { DeviceTokenVerifier, ExternalIdentityResolver, SignedAccessTokenService, SqliteApprovalStore, SqliteAuditLog, PolicyEngine, ApprovalService, createDefaultProfile, isWithin, SqliteDeviceIdentityStore, SqliteExternalIdentityBindingStore, type ChannelKind, type DeviceIdentity, type ExternalIdentityRole } from '@agentcorps/security';
 import { JsonlSessionStore, migrateSessionStore, SessionService, SqliteSessionStore } from '@agentcorps/session';
-import { MockAgent, SqliteEventStore, TaskRuntime } from '@agentcorps/runtime';
+import { MockAgent, SqliteEventStore, TaskRuntime, ApprovalRequiredError } from '@agentcorps/runtime';
 
 function usage(): never {
   console.error(`AgentCorps CLI 0.1.0
@@ -30,11 +30,15 @@ Commands:
   task run TASK_ID [--agent mock|TOOL|command] [--data-dir PATH]
        [--config PATH] [--agents-config PATH] [--model MODEL]
        [--role developer|reviewer|planner|tester|security|writer] [--role-file PATH] [--instructions TEXT]
-       [--agent-command PATH] [--agent-arg ARG] [--sandbox-backend macos|container]
+       [--agent-command PATH] [--agent-arg ARG] [--workspace-root PATH] [--approval-mode never|always]
+       [--sandbox-backend macos|container]
        [--container-image IMAGE] [--sandbox-network full] [--sandbox-memory-mb N] [--sandbox-cpu N] [--sandbox-pids N]
   task cancel TASK_ID [--data-dir PATH]    Cancel a task
   task retry TASK_ID [--data-dir PATH]     Requeue a failed or cancelled task
   task probe [--agent TOOL] [--command PATH] [--agents-config PATH]    Probe an Agent executable
+  approval list [--data-dir PATH]      List persisted AgentCorps approvals
+  approval approve APPROVAL_ID [--decided-by ID]
+  approval deny APPROVAL_ID [--decided-by ID]
   memory save --scope S --content C       Save global/workspace/session memory
        [--workspace-id ID] [--session-id ID] [--sensitivity public|private|secret]
   memory search --query Q                 Search visible memory
@@ -142,25 +146,36 @@ function agentTools() {
 function agentForRun(): AgentAdapter {
   const roleSelection = selectedRole();
   const instructions = agentInstructions();
-  return withRole(unconfiguredAgentForRun(roleSelection.configured), { ...(roleSelection.role ? { role: roleSelection.role } : {}), ...(instructions !== undefined ? { instructions } : {}) });
+  const adapter = withRole(unconfiguredAgentForRun(roleSelection.configured), { ...(roleSelection.role ? { role: roleSelection.role } : {}), ...(instructions !== undefined ? { instructions } : {}) });
+  return withAgentControls(adapter, selectedAgentId());
+}
+
+function agentControlConfig(agentId: string): { cwd: string; workspaceRoot: string; approvalMode: 'never' | 'always' } {
+  const configured = runtimeConfig(agentId);
+  const workspaceRoot = resolveConfiguredPath(flag('--workspace-root') ?? configured.workspaceRoot ?? configured.cwd ?? process.cwd());
+  const cwd = resolveConfiguredPath(configured.cwd ?? flag('--workspace-root') ?? process.cwd());
+  if (!isWithin(workspaceRoot, cwd)) throw new Error(`Agent working directory must be inside workspace root: ${cwd}`);
+  const approvalMode = flag('--approval-mode') ?? configured.approvalMode ?? 'never';
+  if (approvalMode !== 'never' && approvalMode !== 'always') throw new Error('--approval-mode must be never or always');
+  return { cwd, workspaceRoot, approvalMode };
 }
 
 function unconfiguredAgentForRun(roleConfigured = false): AgentAdapter {
   const selected = selectedAgentId();
   const configured = runtimeConfig(selected);
+  const controls = agentControlConfig(selected);
   const command = flag('--agent-command') ?? configured.command;
   const args = options().has('--agent-arg') ? repeatedFlag('--agent-arg') : configured.args;
   if (selected === 'mock') return new MockAgent();
   if (selected === 'command') {
     if (!command) throw new Error('--agent-command or tools.command is required for --agent command');
-    const sandbox = commandSandbox(configured.cwd);
-    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, ...(args ? { args } : {}), outputFormat: 'text', promptPlacement: 'argument', ...(configured.cwd ? { cwd: resolveConfiguredPath(configured.cwd) } : {}), ...(configured.env ? { env: configured.env } : {}), ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }), ...(sandbox ? { sandbox } : {}) });
+    const sandbox = commandSandbox(controls.cwd, controls.workspaceRoot);
+    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, ...(args ? { args } : {}), outputFormat: 'text', promptPlacement: 'argument', cwd: controls.cwd, ...(configured.env ? { env: configured.env } : {}), ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }), ...(sandbox ? { sandbox } : {}) });
   }
-  const sandbox = commandSandbox(configured.cwd);
+  const sandbox = commandSandbox(controls.cwd, controls.workspaceRoot);
   const model = flag('--model') ?? configured.model ?? agentCorpsConfig().defaults?.model;
   return agentTools().create(selected, {
-    ...(command ? { command } : {}), ...(args ? { args } : {}),
-    ...(configured.cwd ? { cwd: resolveConfiguredPath(configured.cwd) } : {}),
+    ...(command ? { command } : {}), ...(args ? { args } : {}), cwd: controls.cwd,
     ...(configured.env ? { env: configured.env } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(roleConfigured ? { role: null } : {}),
@@ -169,15 +184,61 @@ function unconfiguredAgentForRun(roleConfigured = false): AgentAdapter {
   });
 }
 
-function commandSandbox(cwd?: string): CommandAgentOptions['sandbox'] {
+function commandSandbox(cwd?: string, workspaceRoot?: string): CommandAgentOptions['sandbox'] {
   const backend = flag('--sandbox-backend');
   if (!backend) return undefined;
   if (backend !== 'macos' && backend !== 'container') throw new Error('--sandbox-backend must be macos or container');
   if (backend === 'container' && !flag('--container-image')) throw new Error('--container-image is required for container sandboxing');
   return {
-    backend, workspaceRoot: resolveConfiguredPath(cwd ?? process.cwd()), network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
+    backend, workspaceRoot: resolveConfiguredPath(workspaceRoot ?? cwd ?? process.cwd()), network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
     ...(flag('--container-image') ? { containerImage: flag('--container-image')! } : {}),
     maxMemoryMb: Number(flag('--sandbox-memory-mb') ?? '1024'), maxCpu: Number(flag('--sandbox-cpu') ?? '2'), maxPids: Number(flag('--sandbox-pids') ?? '128'),
+  };
+}
+
+let agentControlSecurity: { readonly audit: SqliteAuditLog; readonly store: SqliteApprovalStore; readonly engine: PolicyEngine; readonly approvals: ApprovalService } | undefined;
+function agentControlServices(): { readonly audit: SqliteAuditLog; readonly store: SqliteApprovalStore; readonly engine: PolicyEngine; readonly approvals: ApprovalService } {
+  if (agentControlSecurity) return agentControlSecurity;
+  const dataDir = dataDirectory();
+  const databasePath = deviceDatabasePath(dataDir);
+  const audit = new SqliteAuditLog(databasePath);
+  const store = new SqliteApprovalStore(databasePath);
+  agentControlSecurity = { audit, store, engine: new PolicyEngine(audit), approvals: new ApprovalService(store) };
+  return agentControlSecurity;
+}
+
+function closeAgentControlServices(): void {
+  agentControlSecurity?.audit.close();
+  agentControlSecurity?.store.close();
+  agentControlSecurity = undefined;
+}
+
+function withAgentControls(adapter: AgentAdapter, agentId: string): AgentAdapter {
+  const controls = agentControlConfig(agentId);
+  if (controls.approvalMode === 'never') return adapter;
+  const services = agentControlServices();
+  return {
+    descriptor: adapter.descriptor,
+    async execute(request) {
+      const toolRequest = {
+        requestId: `agent:${request.task.id}:${adapter.descriptor.id}`,
+        taskId: request.task.id,
+        capability: 'process.exec' as const,
+        command: adapter.descriptor.id,
+        metadata: { agentId, cwd: controls.cwd, workspaceRoot: controls.workspaceRoot },
+      };
+      const policy = services.engine.evaluate(toolRequest, { mode: request.task.mode, profile: createDefaultProfile(controls.workspaceRoot, 'S2') });
+      if (policy.decision === 'deny') throw new Error(`Agent execution denied: ${policy.reason}`);
+      const existing = services.approvals.list().find((approval) => approval.request.requestId === toolRequest.requestId && (approval.status === 'pending' || approval.status === 'approved'));
+      if (existing?.status === 'pending') throw new ApprovalRequiredError(existing.id);
+      if (existing?.status === 'approved') {
+        if (!services.approvals.consume(existing.id)) throw new ApprovalRequiredError(existing.id);
+      } else {
+        const approval = services.approvals.create(toolRequest, policy);
+        throw new ApprovalRequiredError(approval.id);
+      }
+      await adapter.execute(request);
+    },
   };
 }
 
@@ -279,6 +340,32 @@ async function main(): Promise<void> {
     await local.runTask(created.id, new MockAgent());
     unsubscribe();
     return;
+  }
+
+  if (command === 'approval') {
+    const action = process.argv[3];
+    const store = new SqliteApprovalStore(deviceDatabasePath());
+    const service = new ApprovalService(store);
+    try {
+      if (action === 'list') {
+        console.log(JSON.stringify(service.list(), null, 2));
+        return;
+      }
+      const id = process.argv[4];
+      if (!id) throw new Error('Approval ID is required');
+      const decidedBy = flag('--decided-by') ?? 'cli-user';
+      if (action === 'approve') {
+        console.log(JSON.stringify(service.approve(id, decidedBy), null, 2));
+        return;
+      }
+      if (action === 'deny') {
+        console.log(JSON.stringify(service.deny(id, decidedBy), null, 2));
+        return;
+      }
+      usage();
+    } finally {
+      store.close();
+    }
   }
 
   if (command === 'device') {
@@ -469,6 +556,7 @@ async function main(): Promise<void> {
       sessionStore.close();
       bindings?.close();
       deviceServices?.store.close();
+      closeAgentControlServices();
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);

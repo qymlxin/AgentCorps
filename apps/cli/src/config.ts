@@ -7,11 +7,13 @@ export interface AgentRuntimeConfig {
   readonly command?: string;
   readonly args?: readonly string[];
   readonly cwd?: string;
+  readonly workspaceRoot?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly model?: string;
   readonly role?: string;
   readonly instructions?: string;
   readonly timeoutMs?: number;
+  readonly approvalMode?: 'never' | 'always';
 }
 
 export interface CustomRoleConfig {
@@ -85,14 +87,15 @@ function validateDefaults(value: unknown, path: string): void {
 
 function validateTools(value: unknown, path: string): void {
   if (!isRecord(value)) throw new Error(`tools must be an object: ${path}`);
-  const allowed = new Set(['command', 'args', 'cwd', 'env', 'model', 'role', 'instructions', 'timeoutMs']);
+  const allowed = new Set(['command', 'args', 'cwd', 'workspaceRoot', 'env', 'model', 'role', 'instructions', 'timeoutMs', 'approvalMode']);
   for (const [id, config] of Object.entries(value)) {
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(id) || !isRecord(config)) throw new Error(`Invalid tool configuration: ${id}`);
     if (Object.keys(config).some((key) => !allowed.has(key))) throw new Error(`Unknown field in tools.${id}: ${path}`);
-    for (const key of ['command', 'cwd', 'model', 'role', 'instructions']) if (config[key] !== undefined && typeof config[key] !== 'string') throw new Error(`tools.${id}.${key} must be a string: ${path}`);
+    for (const key of ['command', 'cwd', 'workspaceRoot', 'model', 'role', 'instructions']) if (config[key] !== undefined && typeof config[key] !== 'string') throw new Error(`tools.${id}.${key} must be a string: ${path}`);
     if (config.args !== undefined && (!Array.isArray(config.args) || !config.args.every((entry) => typeof entry === 'string' && !entry.includes('\0')))) throw new Error(`tools.${id}.args must be strings: ${path}`);
     if (config.env !== undefined && (!isRecord(config.env) || Object.values(config.env).some((entry) => typeof entry !== 'string' || entry.includes('\0')))) throw new Error(`tools.${id}.env must contain string values: ${path}`);
     if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1)) throw new Error(`tools.${id}.timeoutMs must be a positive integer: ${path}`);
+    if (config.approvalMode !== undefined && config.approvalMode !== 'never' && config.approvalMode !== 'always') throw new Error(`tools.${id}.approvalMode must be never or always: ${path}`);
   }
 }
 

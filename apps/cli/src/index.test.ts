@@ -195,4 +195,38 @@ describe('CLI', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it('pauses configured agents for approval and resumes after a one-time decision', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentcorps-approval-home-'));
+    const dataDir = mkdtempSync(join(tmpdir(), 'agentcorps-approval-data-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'agentcorps-approval-workspace-'));
+    try {
+      const fixture = join(workspace, 'approved-tool.cjs');
+      mkdirSync(join(home, '.agentcorps'), { recursive: true });
+      writeFileSync(fixture, "console.log('approved run')");
+      writeFileSync(join(home, '.agentcorps', 'config.json'), JSON.stringify({
+        version: 1,
+        paths: { dataDir },
+        defaults: { agent: 'approved-tool' },
+        tools: { 'approved-tool': { workspaceRoot: workspace, cwd: workspace } },
+        toolDefinitions: [{ id: 'approved-tool', displayName: 'Approved tool', command: process.execPath, args: [fixture], outputFormat: 'text', promptPlacement: 'argument' }],
+      }));
+      const env = { ...process.env, HOME: home };
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Approval', '--objective', 'run with approval'], { env })).stdout) as { id: string };
+      const waiting = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--approval-mode', 'always'], { env })).stdout) as { status: string };
+      expect(waiting.status).toBe('waiting_approval');
+      const approvals = JSON.parse((await execFileAsync('node', ['dist/index.js', 'approval', 'list'], { env })).stdout) as Array<{ id: string; status: string }>;
+      expect(approvals).toHaveLength(1);
+      expect(approvals[0]).toMatchObject({ status: 'pending' });
+      await execFileAsync('node', ['dist/index.js', 'approval', 'approve', approvals[0]!.id, '--decided-by', 'test-user'], { env });
+      const resumed = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--approval-mode', 'always'], { env })).stdout) as { status: string };
+      expect(resumed.status).toBe('succeeded');
+      const consumed = JSON.parse((await execFileAsync('node', ['dist/index.js', 'approval', 'list'], { env })).stdout) as Array<{ status: string }>;
+      expect(consumed[0]?.status).toBe('consumed');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });

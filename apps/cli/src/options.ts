@@ -2,10 +2,10 @@
 const VALUE_OPTIONS = new Set([
   '--port', '--host', '--token', '--read-only-token', '--data-dir', '--config', '--cors-origin',
   '--title', '--objective', '--mode', '--agent', '--agents-config', '--model',
-  '--role', '--role-file', '--instructions', '--agent-command', '--agent-arg', '--command',
+  '--role', '--role-file', '--instructions', '--agent-command', '--agent-arg', '--command', '--workspace-root', '--approval-mode',
   '--sandbox-backend', '--container-image', '--sandbox-network', '--sandbox-memory-mb', '--sandbox-cpu', '--sandbox-pids',
   '--scope', '--content', '--workspace-id', '--session-id', '--sensitivity', '--query', '--memory-id',
-  '--output', '--input', '--label', '--device-id', '--ttl', '--channel', '--external-user-id',
+  '--output', '--input', '--label', '--device-id', '--ttl', '--channel', '--external-user-id', '--decided-by',
 ]);
 
 export function parseCommandOptions(argv: readonly string[]): ReadonlyMap<string, readonly string[]> {
