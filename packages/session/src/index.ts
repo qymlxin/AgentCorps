@@ -25,6 +25,16 @@ export interface SessionMessage {
   readonly createdAt: string;
 }
 
+export interface SessionSearchOptions {
+  readonly workspaceId?: string;
+  readonly role?: MessageRole;
+}
+
+export interface SessionSearchResult {
+  readonly session: Session;
+  readonly message: SessionMessage;
+}
+
 export interface SessionStore {
   saveSession(session: Session): void;
   saveMessage(message: SessionMessage): void;
@@ -32,6 +42,7 @@ export interface SessionStore {
   getSession(id: string): Session | undefined;
   listSessions(): readonly Session[];
   listMessages(sessionId: string): readonly SessionMessage[];
+  searchMessages(query: string, options?: SessionSearchOptions, limit?: number): readonly SessionSearchResult[];
 }
 
 interface SqliteStatement {
@@ -74,7 +85,10 @@ export class SqliteSessionStore implements SessionStore {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS session_messages_session_idx ON session_messages (session_id, created_at, id);
+      CREATE VIRTUAL TABLE IF NOT EXISTS session_messages_fts USING fts5(message_id UNINDEXED, session_id UNINDEXED, role UNINDEXED, content, tokenize = 'unicode61');
     `);
+    this.db.prepare('DELETE FROM session_messages_fts').run();
+    this.db.prepare('INSERT INTO session_messages_fts (message_id, session_id, role, content) SELECT id, session_id, role, content FROM session_messages').run();
   }
 
   saveSession(session: Session): void {
@@ -95,6 +109,8 @@ export class SqliteSessionStore implements SessionStore {
         content = excluded.content, agent_id = excluded.agent_id, task_id = excluded.task_id,
         created_at = excluded.created_at
     `).run(message.id, message.sessionId, message.role, message.content, message.agentId ?? null, message.taskId ?? null, message.createdAt);
+    this.db.prepare('DELETE FROM session_messages_fts WHERE message_id = ?').run(message.id);
+    this.db.prepare('INSERT INTO session_messages_fts (message_id, session_id, role, content) VALUES (?, ?, ?, ?)').run(message.id, message.sessionId, message.role, message.content);
   }
 
   archiveSession(id: string, archivedAt: string): Session | undefined {
@@ -118,6 +134,28 @@ export class SqliteSessionStore implements SessionStore {
     return this.db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at, id').all(sessionId).map((row) => messageFromRow(row as Record<string, unknown>));
   }
 
+  searchMessages(query: string, options: SessionSearchOptions = {}, limit = 50): readonly SessionSearchResult[] {
+    const terms = ftsTerms(query);
+    if (!terms) return [];
+    const boundedLimit = searchLimit(limit);
+    return this.db.prepare(`
+      SELECT s.*, m.id AS message_id, m.session_id AS message_session_id, m.role AS message_role,
+        m.content AS message_content, m.agent_id AS message_agent_id, m.task_id AS message_task_id,
+        m.created_at AS message_created_at
+      FROM session_messages_fts f
+      JOIN session_messages m ON m.id = f.message_id
+      JOIN sessions s ON s.id = m.session_id
+      WHERE session_messages_fts MATCH ?
+        AND (? IS NULL OR s.workspace_id = ?)
+        AND (? IS NULL OR m.role = ?)
+      ORDER BY bm25(session_messages_fts), m.created_at DESC, m.id DESC
+      LIMIT ?
+    `).all(terms, options.workspaceId ?? null, options.workspaceId ?? null, options.role ?? null, options.role ?? null, boundedLimit).map((row) => {
+      const value = row as Record<string, unknown>;
+      return { session: sessionFromRow(value), message: messageFromJoinedRow(value) };
+    });
+  }
+
   close(): void { this.db.close(); }
 }
 
@@ -135,6 +173,30 @@ function messageFromRow(row: Record<string, unknown>): SessionMessage {
     ...(row.agent_id ? { agentId: String(row.agent_id) } : {}), ...(row.task_id ? { taskId: String(row.task_id) } : {}),
     createdAt: String(row.created_at),
   };
+}
+
+function messageFromJoinedRow(row: Record<string, unknown>): SessionMessage {
+  return {
+    id: String(row.message_id), sessionId: String(row.message_session_id), role: row.message_role as MessageRole, content: String(row.message_content),
+    ...(row.message_agent_id ? { agentId: String(row.message_agent_id) } : {}), ...(row.message_task_id ? { taskId: String(row.message_task_id) } : {}),
+    createdAt: String(row.message_created_at),
+  };
+}
+
+function ftsTerms(query: string): string {
+  return query.trim().split(/\s+/).filter(Boolean).map((term) => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
+}
+
+function searchLimit(limit: number): number {
+  if (!Number.isInteger(limit) || limit < 1) throw new Error('Session search limit must be a positive integer');
+  return Math.min(limit, 100);
+}
+
+function sessionSearchMatches(session: Session, message: SessionMessage, query: string, options: SessionSearchOptions): boolean {
+  if (session.archivedAt || (options.workspaceId && session.workspaceId !== options.workspaceId) || (options.role && message.role !== options.role)) return false;
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const content = message.content.toLocaleLowerCase();
+  return terms.every((term) => content.includes(term));
 }
 
 export function migrateSessionStore(source: SessionStore, target: SessionStore): number {
@@ -174,6 +236,11 @@ export class JsonlSessionStore implements SessionStore {
   getSession(id: string): Session | undefined { return this.sessions.get(id); }
   listSessions(): readonly Session[] { return [...this.sessions.values()]; }
   listMessages(sessionId: string): readonly SessionMessage[] { return [...(this.messages.get(sessionId) ?? [])]; }
+  searchMessages(query: string, options: SessionSearchOptions = {}, limit = 50): readonly SessionSearchResult[] {
+    const results: SessionSearchResult[] = [];
+    for (const session of this.listSessions()) for (const message of this.listMessages(session.id)) if (sessionSearchMatches(session, message, query, options)) results.push({ session, message });
+    return results.slice(0, searchLimit(limit));
+  }
 
   private append(operation: Operation): void { appendFileSync(this.filePath, `${JSON.stringify(operation)}\n`, 'utf8'); }
   private apply(operation: Operation): void {
@@ -209,6 +276,11 @@ export class InMemorySessionStore implements SessionStore {
   getSession(id: string): Session | undefined { return this.sessions.get(id); }
   listSessions(): readonly Session[] { return [...this.sessions.values()]; }
   listMessages(sessionId: string): readonly SessionMessage[] { return [...(this.messages.get(sessionId) ?? [])]; }
+  searchMessages(query: string, options: SessionSearchOptions = {}, limit = 50): readonly SessionSearchResult[] {
+    const results: SessionSearchResult[] = [];
+    for (const session of this.listSessions()) for (const message of this.listMessages(session.id)) if (sessionSearchMatches(session, message, query, options)) results.push({ session, message });
+    return results.slice(0, searchLimit(limit));
+  }
 }
 
 export class SessionService {
@@ -229,6 +301,10 @@ export class SessionService {
   get(id: string): Session | undefined { return this.store.getSession(id); }
   list(): readonly Session[] { return this.store.listSessions().filter((session) => !session.archivedAt); }
   messages(sessionId: string): readonly SessionMessage[] { return this.store.listMessages(sessionId); }
+  search(query: string, options: SessionSearchOptions = {}, limit = 50): readonly SessionSearchResult[] {
+    if (!query.trim()) throw new Error('Session search query cannot be empty');
+    return this.store.searchMessages(query, options, limit).filter((result) => !result.session.archivedAt);
+  }
 
   appendMessage(input: { sessionId: string; role: MessageRole; content: string; agentId?: string; taskId?: string }): SessionMessage {
     const session = this.store.getSession(input.sessionId);

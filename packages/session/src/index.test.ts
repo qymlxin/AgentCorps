@@ -43,6 +43,22 @@ describe('sessions', () => {
     }
   });
 
+  it('searches message content with workspace and role filters', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-session-search-'));
+    try {
+      for (const store of [new JsonlSessionStore(join(directory, 'sessions.jsonl')), new SqliteSessionStore(join(directory, 'sessions.db'))]) {
+        const service = new SessionService(store, () => '2026-10-24T00:00:00.000Z', (prefix) => `${prefix}-${Math.random()}`);
+        const release = service.create({ workspaceId: 'release', title: 'Release thread', mode: 'code' });
+        const other = service.create({ workspaceId: 'other', title: 'Other thread', mode: 'code' });
+        service.appendMessage({ sessionId: release.id, role: 'user', content: 'Search the release checklist' });
+        service.appendMessage({ sessionId: release.id, role: 'agent', content: 'The release checklist is complete' });
+        service.appendMessage({ sessionId: other.id, role: 'agent', content: 'The release checklist is unrelated' });
+        expect(service.search('release checklist', { workspaceId: 'release', role: 'agent' })).toHaveLength(1);
+        expect(service.search('release checklist', { workspaceId: 'release' })).toHaveLength(2);
+        if (store instanceof SqliteSessionStore) store.close();
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
   it('does not return archived sessions and rejects new messages after archive', () => {
     const service = new SessionService(new JsonlSessionStore(join(mkdtempSync(join(tmpdir(), 'agentcorps-session-')), 'sessions.jsonl')), () => '2026-10-24T00:00:00.000Z', (prefix) => `${prefix}-1`);
     const session = service.create({ workspaceId: 'ws', title: 'Archive me', mode: 'work' });

@@ -17,6 +17,7 @@ function gateway() {
     if (url.pathname.endsWith('/run')) return Response.json({ error: 'Insufficient gateway role' }, { status: 403 });
     if (url.pathname === '/tasks') return Response.json(init?.method === 'POST' ? { task } : { tasks: [task] });
     if (url.pathname === '/sessions') return Response.json(init?.method === 'POST' ? { session } : { sessions: [session] });
+    if (url.pathname === '/sessions/search') return Response.json({ results: [{ session, message: { id: 'message-1', sessionId: session.id, role: 'agent', content: 'Searchable release context', createdAt: session.createdAt } }] });
     if (url.pathname === `/sessions/${session.id}`) return Response.json({ session, messages: [{ id: 'message-1', sessionId: session.id, role: 'agent', content: '<script>unsafe</script> Review complete.', createdAt: session.createdAt }] });
     if (url.pathname === '/files') return Response.json({ root: '/workspace', path: url.searchParams.get('path') || '', truncated: false, entries: [{ name: 'README.md', path: 'README.md', kind: 'file', size: 12, modifiedAt: session.createdAt }] });
     if (url.pathname === '/files/content') return Response.json({ path: 'README.md', content: '# workspace', size: 11, modifiedAt: session.createdAt });
@@ -38,7 +39,7 @@ function gateway() {
 
 describe('React management console', () => {
   it('shows snapshots, session messages, event history, and accessible navigation', async () => {
-    gateway();
+    const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText(task.title);
@@ -48,6 +49,10 @@ describe('React management console', () => {
     await user.click(screen.getByRole('button', { name: 'Sessions' }));
     await screen.findByText('<script>unsafe</script> Review complete.');
     expect(document.querySelector('script')).toBeNull();
+    await user.type(screen.getByLabelText('SEARCH MESSAGES'), 'release');
+    await user.click(screen.getByRole('button', { name: 'Search →' }));
+    expect(await screen.findByText('Searchable release context')).toBeTruthy();
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/sessions/search?query=release'))).toBe(true);
     expect(screen.getByRole('button', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     await user.click(screen.getByRole('button', { name: 'Event stream' }));
     expect(screen.getByText('run.output')).toBeTruthy();

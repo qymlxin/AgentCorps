@@ -2,6 +2,7 @@ import type { CreateTaskInput, Task, TaskEvent } from '@agentcorps/domain';
 import type { Session, SessionMessage } from '@agentcorps/session';
 
 export type { Task, TaskEvent, Session, SessionMessage };
+export interface SessionSearchResult { readonly session: Session; readonly message: SessionMessage; }
 export type TaskAction = 'run' | 'cancel' | 'retry';
 export type ApprovalAction = 'approve' | 'deny';
 export interface Approval {
@@ -89,6 +90,11 @@ export class GatewayClient {
   }
   sessions(signal?: AbortSignal): Promise<{ sessions: Session[] }> {
     return this.request('/sessions', signal ? { signal } : {});
+  }
+  searchSessions(query: string, workspaceId?: string, signal?: AbortSignal): Promise<{ results: SessionSearchResult[] }> {
+    const params = new URLSearchParams({ query });
+    if (workspaceId) params.set('workspaceId', workspaceId);
+    return this.request(`/sessions/search?${params.toString()}`, signal ? { signal } : {});
   }
   approvals(signal?: AbortSignal): Promise<{ approvals: Approval[] }> {
     return this.request('/approvals', signal ? { signal } : {});

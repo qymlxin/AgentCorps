@@ -6,7 +6,7 @@ import type { Duplex } from 'node:stream';
 import type { TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
 import { ApprovalService, ExternalIdentityResolver, InMemoryApprovalStore, InMemoryAuditLog, isWithin, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
-import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
+import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode, type SessionSearchOptions } from '@agentcorps/session';
 import { MockAgent, type AgentAdapter, type TaskRuntime } from '@agentcorps/runtime';
 import {
   FeishuEventAdapter,
@@ -672,6 +672,15 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
         const deleted = memories.delete(memoryId);
         if (!deleted) return sendJson(response, 404, { error: 'Memory not found' });
         return sendJson(response, 200, { memory: deleted });
+      }
+      if (request.method === 'GET' && pathname === '/sessions/search') {
+        const query = url.searchParams.get('query') ?? '';
+        if (!query.trim()) return sendJson(response, 400, { error: 'Session search query is required' });
+        const limitValue = Number(url.searchParams.get('limit') ?? '50');
+        const limit = Number.isInteger(limitValue) && limitValue > 0 && limitValue <= 100 ? limitValue : 50;
+        const roleValue = url.searchParams.get('role');
+        const searchOptions: SessionSearchOptions = { ...(url.searchParams.get('workspaceId') ? { workspaceId: url.searchParams.get('workspaceId')! } : {}), ...(roleValue ? { role: messageRole(roleValue) } : {}) };
+        return sendJson(response, 200, { results: sessions.search(query, searchOptions, limit) });
       }
       if (request.method === 'GET' && pathname === '/sessions') {
         sendJson(response, 200, { sessions: sessions.list() });
