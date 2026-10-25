@@ -68,6 +68,17 @@ describe('CLI', () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
+  it('keeps native model arguments separate from AgentCorps model selection', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-native-args-'));
+    try {
+      const fixture = join(directory, 'tool.cjs');
+      writeFileSync(fixture, `const args=process.argv.slice(2); if(args[0]!=='--model' || args[1]!=='native-model' || !args.at(-1).includes('code reviewer')) process.exit(7); console.log(JSON.stringify({type:'result',response:'Native arguments preserved'}));`);
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Arguments', '--objective', 'Inspect release', '--data-dir', directory])).stdout) as { id: string };
+      const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--data-dir', directory, '--agent', 'zcode', '--agent-command', process.execPath, '--agent-arg', fixture, '--agent-arg', '--model', '--agent-arg', 'native-model', '--role', 'reviewer'])).stdout) as { status: string };
+      expect(result.status).toBe('succeeded');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('has a runnable demo command after build', async () => {
     const { stdout } = await execFileAsync('node', ['dist/index.js', 'demo']);
     expect(stdout).toContain('task.created');

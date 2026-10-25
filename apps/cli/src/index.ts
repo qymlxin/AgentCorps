@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseCommandOptions } from './options.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -58,10 +59,16 @@ Role presets are prompt guidance, not permission or sandbox enforcement.`);
   process.exit(1);
 }
 
-function flag(name: string): string | undefined {
-  const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : undefined;
+let commandOptions: ReturnType<typeof parseCommandOptions> | undefined;
+function options(): ReturnType<typeof parseCommandOptions> {
+  return commandOptions ??= parseCommandOptions(process.argv.slice(2));
 }
+
+function flag(name: string): string | undefined {
+  return options().get(name)?.[0];
+}
+
+function hasFlag(name: string): boolean { return options().has(name); }
 
 function requiredFlag(name: string): string {
   const value = flag(name);
@@ -77,10 +84,8 @@ function taskId(value: string | undefined): TaskId {
   return value as TaskId;
 }
 
-function repeatedFlag(name: string): string[] {
-  const values: string[] = [];
-  for (let index = 0; index < process.argv.length; index += 1) if (process.argv[index] === name && process.argv[index + 1]) values.push(process.argv[index + 1]!);
-  return values;
+function repeatedFlag(name: string): readonly string[] {
+  return options().get(name) ?? [];
 }
 
 let configuredTools: ReturnType<typeof createAgentToolRegistry> | undefined;
@@ -234,7 +239,7 @@ async function main(): Promise<void> {
   if (command === 'demo') {
     const local = new TaskRuntime();
     const unsubscribe = local.store.subscribe((event) => console.log(JSON.stringify(event)));
-    const created = local.createTask({ workspaceId: 'local-workspace', sessionId: 'local-session', title: 'AgentCorps demo task', objective: 'demonstrate a task flowing through the local event runtime', mode: (process.argv.includes('--work') ? 'work' : 'code') as Mode });
+    const created = local.createTask({ workspaceId: 'local-workspace', sessionId: 'local-session', title: 'AgentCorps demo task', objective: 'demonstrate a task flowing through the local event runtime', mode: (hasFlag('--work') ? 'work' : 'code') as Mode });
     await local.runTask(created.id, new MockAgent());
     unsubscribe();
     return;
@@ -294,7 +299,7 @@ async function main(): Promise<void> {
         return;
       }
       if (action === 'list') {
-        const includeRevoked = process.argv.includes('--include-revoked');
+        const includeRevoked = hasFlag('--include-revoked');
         console.log(JSON.stringify(resolver.list().filter((binding) => includeRevoked || !binding.revokedAt), null, 2));
         return;
       }
@@ -402,7 +407,7 @@ async function main(): Promise<void> {
     const corsOrigin = flag('--cors-origin') ?? ((!token && (host === '127.0.0.1' || host === 'localhost')) ? undefined : undefined);
     const memories = memoryService();
     const deviceServices = token ? undefined : deviceAuth(dataDir);
-    const identityRequired = process.argv.includes('--identity-required');
+    const identityRequired = hasFlag('--identity-required');
     const bindings = identityRequired ? identityStore(dataDir) : undefined;
     const identityResolver = bindings ? new ExternalIdentityResolver(bindings) : undefined;
     const channelState = new SqliteChannelStateStore(deviceDatabasePath(dataDir));
@@ -458,7 +463,7 @@ async function main(): Promise<void> {
     if (action === 'search') {
       const workspaceId = flag('--workspace-id');
       const sessionId = flag('--session-id');
-      console.log(JSON.stringify(service.search(requiredFlag('--query'), { ...(workspaceId ? { workspaceId } : {}), ...(sessionId ? { sessionId } : {}), includeSensitive: process.argv.includes('--include-sensitive') }), null, 2));
+      console.log(JSON.stringify(service.search(requiredFlag('--query'), { ...(workspaceId ? { workspaceId } : {}), ...(sessionId ? { sessionId } : {}), includeSensitive: hasFlag('--include-sensitive') }), null, 2));
       return;
     }
     if (action === 'list') {
