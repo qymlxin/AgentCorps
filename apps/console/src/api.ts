@@ -26,6 +26,9 @@ export interface GitCommitResult { readonly hash: string; readonly status: GitSt
 export interface GitApprovalResult { readonly decision: 'approval_required'; readonly approval: Approval; }
 export type GitMutationResult = GitStatus | GitCommitResult | GitApprovalResult;
 export interface TerminalResult { readonly command: string; readonly args: string[]; readonly cwd: string; readonly stdout: string; readonly stderr: string; readonly exitCode: number | null; readonly signal?: string; readonly timedOut: boolean; }
+export interface BrowserTab { readonly id: string; readonly title: string; readonly url: string; readonly type: string; }
+export interface BrowserSnapshot { readonly tabId: string; readonly title: string; readonly url: string; readonly text: string; }
+export interface BrowserScreenshot { readonly tabId: string; readonly mimeType: 'image/png'; readonly data: string; }
 export interface Connection {
   readonly apiBase: string;
   readonly token: string;
@@ -119,6 +122,12 @@ export class GatewayClient {
   terminalExec(command: string, args: string[] = [], taskId = 'console-terminal', approvalId?: string): Promise<TerminalResult | GitApprovalResult> {
     return this.request('/terminal/exec', { method: 'POST', body: JSON.stringify({ command, args, taskId, ...(approvalId ? { approvalId } : {}) }) });
   }
+  browserTabs(signal?: AbortSignal): Promise<{ tabs: BrowserTab[] }> { return this.request('/browser/tabs', signal ? { signal } : {}); }
+  browserSnapshot(tabId: string, signal?: AbortSignal): Promise<{ snapshot: BrowserSnapshot }> { return this.request(`/browser/snapshot?tabId=${encodeURIComponent(tabId)}`, signal ? { signal } : {}); }
+  browserScreenshot(tabId: string, signal?: AbortSignal): Promise<{ screenshot: BrowserScreenshot }> { return this.request(`/browser/screenshot?tabId=${encodeURIComponent(tabId)}`, signal ? { signal } : {}); }
+  browserNavigate(tabId: string, url: string, taskId = 'console-browser', approvalId?: string): Promise<{ result: { tabId: string; url: string } } | GitApprovalResult> { return this.request('/browser/navigate', { method: 'POST', body: JSON.stringify({ tabId, url, taskId, ...(approvalId ? { approvalId } : {}) }) }); }
+  browserClick(tabId: string, selector: string, taskId = 'console-browser', approvalId?: string): Promise<{ result: { tabId: string; selector: string } } | GitApprovalResult> { return this.request('/browser/click', { method: 'POST', body: JSON.stringify({ tabId, selector, taskId, ...(approvalId ? { approvalId } : {}) }) }); }
+  browserFill(tabId: string, selector: string, text: string, taskId = 'console-browser', approvalId?: string): Promise<{ result: { tabId: string; selector: string } } | GitApprovalResult> { return this.request('/browser/fill', { method: 'POST', body: JSON.stringify({ tabId, selector, text, taskId, ...(approvalId ? { approvalId } : {}) }) }); }
   session(id: string, signal?: AbortSignal): Promise<{ session: Session; messages: SessionMessage[] }> {
     return this.request(`/sessions/${encodeURIComponent(id)}`, signal ? { signal } : {});
   }

@@ -40,6 +40,13 @@ AgentCorps 从 `~/.agentcorps/config.json` 自动读取本地配置。也可以�
     "allowWrite": true,
     "requireApproval": true
   },
+  "browser": {
+    "endpoint": "http://127.0.0.1:9222",
+    "allowControl": true,
+    "requireApproval": true,
+    "network": "allowlist",
+    "allowedHosts": ["localhost"]
+  },
   "roles": {
     "release-reviewer": {
       "displayName": "Release reviewer",
@@ -78,6 +85,7 @@ AgentCorps 从 `~/.agentcorps/config.json` 自动读取本地配置。也可以�
 - Codex、Claude Code、Kimi、Qwen 等工具的登录信息和 Provider 设置继续由各自原生配置管理，不复制到 AgentCorps 配置。
 - `cwd` 只设置 Agent 子进程的工作目录；终端、Git、浏览器等高风险能力仍须经过独立的策略和审批检查。
 - `paths.workspaceRoot` 作为桌面文件浏览和 Git Gateway 的默认工作区边界；Git 写入还需要 `git.allowWrite: true`，并默认要求 `git.requireApproval: true`。
+- `browser` 配置控制 DevTools 端点、浏览器控制开关、审批模式、网络模式和目标主机白名单；浏览器控制还会经过 Gateway 安全策略。
 
 ## 设计图
 

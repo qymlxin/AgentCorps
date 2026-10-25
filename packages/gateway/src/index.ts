@@ -31,6 +31,7 @@ import {
 
 import { gitAdd, gitCommit, gitDiff, gitLog, gitRestoreStaged, gitStatus, type GitGatewayOptions } from './git.js';
 import { terminalExec, validateTerminalCwd, type TerminalGatewayOptions } from './terminal.js';
+import { browserClick, browserFill, browserHost, browserNavigate, browserScreenshot, browserSnapshot, browserTabs, type BrowserGatewayOptions } from './browser.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -183,6 +184,7 @@ export interface GatewayOptions {
   readonly files?: FileGatewayOptions;
   readonly git?: GitGatewayOptions;
   readonly terminal?: TerminalGatewayOptions;
+  readonly browser?: BrowserGatewayOptions;
   readonly security?: SecurityGatewayOptions;
   readonly agentFactory?: (task: import('@agentcorps/domain').Task) => AgentAdapter;
 }
@@ -407,6 +409,24 @@ function authorizeTerminal(options: GatewayOptions, policyEngine: PolicyEngine, 
   return { allowed: false, status: 202, body: { decision: policy.decision, policy, approval: approvals.create(request, policy) } };
 }
 
+function authorizeBrowser(options: GatewayOptions, policyEngine: PolicyEngine, approvals: ApprovalService, action: string, taskId: string, host: string, approvalId?: string): GitMutationAuthorization {
+  if (!options.browser?.allowControl) return { allowed: false, status: 403, body: { error: 'Browser control is disabled' } };
+  if (!taskId.trim()) throw new Error('Browser control requires a taskId');
+  const command = `browser ${action}`;
+  if (approvalId) {
+    const approval = approvals.get(approvalId);
+    if (!approval || approval.status !== 'approved' || approval.request.taskId !== taskId || approval.request.command !== command || approval.request.host !== host) return { allowed: false, status: 409, body: { error: 'Browser approval is missing, expired, or does not match this operation' } };
+    return approvals.consume(approvalId) ? { allowed: true } : { allowed: false, status: 409, body: { error: 'Browser approval could not be consumed' } };
+  }
+  if (options.browser.requireApproval === false) return { allowed: true };
+  if (!options.security) return { allowed: false, status: 503, body: { error: 'Browser control requires an explicit security context' } };
+  const request: ToolRequest = { requestId: `browser:${crypto.randomUUID()}`, taskId, capability: 'network.connect', command, host };
+  const policy = policyEngine.evaluate(request, options.security.context);
+  if (policy.decision === 'deny') return { allowed: false, status: 403, body: { decision: policy.decision, policy } };
+  if (policy.decision === 'allow') return { allowed: true };
+  return { allowed: false, status: 202, body: { decision: policy.decision, policy, approval: approvals.create(request, policy) } };
+}
+
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
   const adapters = { ...defaultChannelAdapters(), ...options.channels?.adapters };
   const stateStore = options.channels?.stateStore ?? new InMemoryChannelStateStore();
@@ -591,6 +611,31 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
         if (!authorization.allowed) return sendJson(response, authorization.status ?? 409, authorization.body ?? { error: 'Terminal operation was not authorized' });
         return sendJson(response, 200, await terminalExec(options.terminal, command, args, cwd, timeoutMs));
       }
+      if (options.browser && request.method === 'GET' && pathname === '/browser/tabs') return sendJson(response, 200, { tabs: await browserTabs(options.browser) });
+      if (options.browser && request.method === 'GET' && pathname === '/browser/snapshot') {
+        const tabId = url.searchParams.get('tabId') ?? '';
+        return sendJson(response, 200, { snapshot: await browserSnapshot(options.browser, tabId) });
+      }
+      if (options.browser && request.method === 'GET' && pathname === '/browser/screenshot') {
+        const tabId = url.searchParams.get('tabId') ?? '';
+        return sendJson(response, 200, { screenshot: await browserScreenshot(options.browser, tabId) });
+      }
+      if (options.browser && request.method === 'POST' && ['/browser/navigate', '/browser/click', '/browser/fill'].includes(pathname)) {
+        const body = await readJson(request);
+        const tabId = String(body.tabId ?? '');
+        const taskId = String(body.taskId ?? '');
+        const tabs = await browserTabs(options.browser);
+        const tab = tabs.find((candidate) => candidate.id === tabId);
+        if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+        const target = pathname === '/browser/navigate' ? String(body.url ?? '') : tab.url;
+        const host = browserHost(pathname === '/browser/navigate' ? target : tab.url);
+        const action = pathname === '/browser/navigate' ? `navigate ${target}` : pathname === '/browser/click' ? `click ${String(body.selector ?? '')}` : `fill ${String(body.selector ?? '')} ${String(body.text ?? '')}`;
+        const authorization = authorizeBrowser(options, policyEngine, approvals, action, taskId, host, body.approvalId ? String(body.approvalId) : undefined);
+        if (!authorization.allowed) return sendJson(response, authorization.status ?? 409, authorization.body ?? { error: 'Browser operation was not authorized' });
+        if (pathname === '/browser/navigate') return sendJson(response, 200, { result: await browserNavigate(options.browser, tabId, target) });
+        if (pathname === '/browser/click') return sendJson(response, 200, { result: await browserClick(options.browser, tabId, String(body.selector ?? '')) });
+        return sendJson(response, 200, { result: await browserFill(options.browser, tabId, String(body.selector ?? ''), String(body.text ?? '')) });
+      }
       if (options.files && request.method === 'GET' && pathname === '/files') {
         return sendJson(response, 200, await listFiles(options.files, url.searchParams.get('path')));
       }
@@ -727,3 +772,5 @@ export { gitAdd, gitCommit, gitDiff, gitLog, gitRestoreStaged, gitStatus } from 
 export type { GitCommit, GitGatewayOptions, GitStatus, GitStatusEntry } from './git.js';
 export { terminalExec, validateTerminalCwd } from './terminal.js';
 export type { TerminalGatewayOptions, TerminalResult } from './terminal.js';
+export { browserClick, browserFill, browserHost, browserNavigate, browserScreenshot, browserSnapshot, browserTabs } from './browser.js';
+export type { BrowserGatewayOptions, BrowserScreenshot, BrowserSnapshot, BrowserTab, BrowserTransport } from './browser.js';

@@ -24,6 +24,11 @@ function gateway() {
     if (url.pathname === '/git/log') return Response.json({ commits: [{ hash: 'abcdef1234567890', author: 'AgentCorps', committedAt: session.createdAt, subject: 'initial' }] });
     if (url.pathname === '/git/diff') return Response.json({ path: 'README.md', diff: '-hello\\n+changed' });
     if (url.pathname === '/terminal/exec') return Response.json({ command: 'node', args: [], cwd: '/workspace', stdout: 'v22', stderr: '', exitCode: 0, timedOut: false });
+    if (url.pathname === '/browser/tabs') return Response.json({ tabs: [{ id: 'tab-1', title: 'Example', url: 'https://example.com', type: 'page' }] });
+    if (url.pathname === '/browser/snapshot') return Response.json({ snapshot: { tabId: 'tab-1', title: 'Example', url: 'https://example.com', text: 'Example page' } });
+    if (url.pathname === '/browser/screenshot') return Response.json({ screenshot: { tabId: 'tab-1', mimeType: 'image/png', data: 'cG5n' } });
+    if (url.pathname === '/browser/navigate') return Response.json({ result: { tabId: 'tab-1', url: 'https://example.org' } });
+    if (url.pathname === '/browser/click' || url.pathname === '/browser/fill') return Response.json({ result: { tabId: 'tab-1', selector: '#submit' } });
     if (url.pathname === '/approvals') return Response.json({ approvals: [{ id: 'approval-1', request: { capability: 'shell.execute', command: 'git status' }, reason: 'Review command', status: 'pending' }] });
     return Response.json({ ok: true });
   });
@@ -86,6 +91,19 @@ describe('React management console', () => {
     expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/terminal/exec'))).toBe(true);
   });
 
+  it('controls a connected browser tab through the approval-aware client', async () => {
+    const fetcher = gateway();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(task.title);
+    await user.click(screen.getByRole('button', { name: 'Browser' }));
+    expect(await screen.findByRole('heading', { name: 'Browser' })).toBeTruthy();
+    await screen.findByText('Example page');
+    await user.click(screen.getByRole('button', { name: 'Navigate →' }));
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/browser/navigate'))).toBe(true);
+    await user.keyboard('7');
+    expect(screen.getByRole('button', { name: 'Browser' }).getAttribute('aria-current')).toBe('page');
+  });
   it('opens the task dialog, command palette, and views from keyboard shortcuts', async () => {
     gateway();
     const user = userEvent.setup();

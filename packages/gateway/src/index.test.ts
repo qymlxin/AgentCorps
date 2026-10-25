@@ -328,6 +328,37 @@ describe('gateway', () => {
     }
   });
 
+  it('controls a browser tab through the approval boundary', async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const transport = {
+      async listTabs() { return [{ id: 'tab-1', title: 'Example', url: 'https://example.com', type: 'page' }]; },
+      async command(_tabId: string, method: string, params?: Readonly<Record<string, unknown>>) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') return { result: { value: JSON.stringify({ title: 'Example', url: 'https://example.com', text: 'hello browser' }) } };
+        return { frameId: 'frame-1' };
+      },
+    };
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { browser: { allowControl: true, transport }, security: { context: { mode: 'code', profile: { ...createDefaultProfile('/workspace', 'S2'), network: 'full', allowedHosts: [] } } } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      expect((await fetch(`${base}/browser/tabs`)).status).toBe(200);
+      const snapshot = await fetch(`${base}/browser/snapshot?tabId=tab-1`);
+      expect(await snapshot.text()).toContain('hello browser');
+      const request = { taskId: 'browser-task', tabId: 'tab-1', url: 'https://example.org' };
+      const pending = await fetch(`${base}/browser/navigate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+      expect(pending.status).toBe(202);
+      const approval = (await pending.json() as { approval: { id: string } }).approval;
+      expect((await fetch(`${base}/approvals/${approval.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decidedBy: 'test-user' }) })).status).toBe(200);
+      const navigated = await fetch(`${base}/browser/navigate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...request, approvalId: approval.id }) });
+      expect(navigated.status).toBe(200);
+      expect(calls.some((call) => call.method === 'Page.navigate')).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('executes terminal commands without a shell after approval and preserves the workspace cwd', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentcorps-terminal-'));
     const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { terminal: { root, allowExec: true }, security: { context: { mode: 'code', profile: createDefaultProfile(root, 'S2') } } });

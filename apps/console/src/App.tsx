@@ -9,8 +9,9 @@ import { ApprovalsPanel, EventsPanel, TasksPanel } from './components/Panels.js'
 import { SessionsPanel } from './components/SessionsPanel.js';
 import { GitPanel } from './components/GitPanel.js';
 import { TerminalPanel } from './components/TerminalPanel.js';
+import { BrowserPanel } from './components/BrowserPanel.js';
 
-type View = 'overview' | 'sessions' | 'events' | 'files' | 'git' | 'terminal';
+type View = 'overview' | 'sessions' | 'events' | 'files' | 'git' | 'terminal' | 'browser';
 
 export function App() {
   const [connection, setConnection] = useState(loadConnection);
@@ -44,6 +45,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
       case 'files': setShortcutOverlay(null); setView('files'); break;
       case 'git': setShortcutOverlay(null); setView('git'); break;
       case 'terminal': setShortcutOverlay(null); setView('terminal'); break;
+      case 'browser': setShortcutOverlay(null); setView('browser'); break;
       case 'refresh': setShortcutOverlay(null); void data.refresh(); break;
       case 'palette': setShortcutOverlay((current) => current === 'palette' ? null : 'palette'); break;
       case 'help': setShortcutOverlay('help'); break;
@@ -73,7 +75,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
     <main className="shell">
       <aside className="rail">
         <div className="eyebrow">WORKSPACE</div><div className="workspace-name"><span className="workspace-icon" aria-hidden="true">⌂</span><span>local-workspace</span></div>
-        <nav className="nav" aria-label="Main navigation">{([['overview', '◈', 'Overview'], ['sessions', '◎', 'Sessions'], ['events', '≋', 'Event stream'], ['files', '⌁', 'Files'], ['git', '⌘', 'Git'], ['terminal', '▣', 'Terminal']] as const).map(([value, icon, label]) => <button key={value} className={`nav-item ${view === value ? 'active' : ''}`} aria-current={view === value ? 'page' : undefined} onClick={() => setView(value)}><span aria-hidden="true">{icon}</span>{label}</button>)}</nav>
+        <nav className="nav" aria-label="Main navigation">{([['overview', '◈', 'Overview'], ['sessions', '◎', 'Sessions'], ['events', '≋', 'Event stream'], ['files', '⌁', 'Files'], ['git', '⌘', 'Git'], ['terminal', '▣', 'Terminal'], ['browser', '◌', 'Browser']] as const).map(([value, icon, label]) => <button key={value} className={`nav-item ${view === value ? 'active' : ''}`} aria-current={view === value ? 'page' : undefined} onClick={() => setView(value)}><span aria-hidden="true">{icon}</span>{label}</button>)}</nav>
         <div className="rail-footer"><span className="tiny-dot" /><span>LOCAL-FIRST RUNTIME</span><span className="version">v0.1</span></div>
       </aside>
       <section className="content" aria-label="Management console">
@@ -93,6 +95,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
         {view === 'files' && <FilesPanel client={data.client} visible />}
         {view === 'git' && <GitPanel client={data.client} approvals={data.approvals} visible onRefresh={data.refresh} />}
         {view === 'terminal' && <TerminalPanel client={data.client} approvals={data.approvals} visible onRefresh={data.refresh} />}
+        {view === 'browser' && <BrowserPanel client={data.client} approvals={data.approvals} visible onRefresh={data.refresh} />}
         {view === 'sessions' && <SessionsPanel sessions={data.sessions} client={data.client} visible />}
       </section>
     </main>

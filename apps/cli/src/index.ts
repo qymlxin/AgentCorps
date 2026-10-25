@@ -20,7 +20,7 @@ function usage(): never {
 
 Commands:
   demo                                      Run an in-memory local demo
-  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval] [--terminal-exec] [--terminal-no-approval]    Start the local HTTP/SSE/WebSocket gateway
+  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval] [--terminal-exec] [--terminal-no-approval] [--browser-control] [--browser-no-approval]    Start the local HTTP/SSE/WebSocket gateway
   task create --title T --objective O       Create a persistent task
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
@@ -538,6 +538,11 @@ async function main(): Promise<void> {
     const audit = new SqliteAuditLog(deviceDatabasePath(dataDir));
     const approvalStore = new SqliteApprovalStore(deviceDatabasePath(dataDir));
     const terminalConfig = agentCorpsConfig().terminal;
+    const browserConfig = agentCorpsConfig().browser;
+    const browserNetwork = flag('--browser-network') ?? browserConfig?.network ?? 'none';
+    if (browserNetwork !== 'none' && browserNetwork !== 'allowlist' && browserNetwork !== 'full') throw new Error('--browser-network must be none, allowlist, or full');
+    const browserHosts = options().has('--browser-host') ? repeatedFlag('--browser-host') : browserConfig?.allowedHosts ?? [];
+    const securityProfile = { ...createDefaultProfile(workspaceRoot, 'S2'), network: browserNetwork as 'none' | 'allowlist' | 'full', allowedHosts: browserHosts };
     const gatewayOptions = {
       ...((token || readOnlyToken) ? { tokenVerifier: async (candidate: string) => candidate === readOnlyToken ? { roles: ['read'] as const } : candidate === token } : { tokenVerifier: async (candidate: string) => Boolean(deviceServices?.verifier.verify(candidate)) }),
       ...(corsOrigin ? { corsOrigin } : {}),
@@ -545,8 +550,9 @@ async function main(): Promise<void> {
       files: { root: workspaceRoot },
       git: { root: workspaceRoot, allowWrite: hasFlag('--git-write') || agentCorpsConfig().git?.allowWrite === true, requireApproval: !hasFlag('--git-no-approval') && agentCorpsConfig().git?.requireApproval !== false },
       terminal: { root: workspaceRoot, allowExec: hasFlag('--terminal-exec') || terminalConfig?.allowExec === true, requireApproval: !hasFlag('--terminal-no-approval') && terminalConfig?.requireApproval !== false, ...(terminalConfig?.defaultTimeoutMs === undefined ? {} : { defaultTimeoutMs: terminalConfig.defaultTimeoutMs }) },
+      browser: { endpoint: flag('--browser-endpoint') ?? browserConfig?.endpoint ?? 'http://127.0.0.1:9222', allowControl: hasFlag('--browser-control') || browserConfig?.allowControl === true, requireApproval: !hasFlag('--browser-no-approval') && browserConfig?.requireApproval !== false, ...(browserConfig?.timeoutMs === undefined ? {} : { timeoutMs: browserConfig.timeoutMs }), ...(browserConfig?.maxTextBytes === undefined ? {} : { maxTextBytes: browserConfig.maxTextBytes }), ...(browserConfig?.maxScreenshotBytes === undefined ? {} : { maxScreenshotBytes: browserConfig.maxScreenshotBytes }) },
       memory: { service: memories },
-      security: { context: { mode: 'code' as const, profile: createDefaultProfile(workspaceRoot, 'S2') }, engine: new PolicyEngine(audit), approvals: new ApprovalService(approvalStore), allowApprovalDecisions: true },
+      security: { context: { mode: 'code' as const, profile: securityProfile }, engine: new PolicyEngine(audit), approvals: new ApprovalService(approvalStore), allowApprovalDecisions: true },
       agentFactory: () => agentForRun(),
     };
     const sessionStore = new SqliteSessionStore(join(dataDir, 'agentcorps.db'));

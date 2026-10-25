@@ -36,6 +36,7 @@ export interface AgentCorpsConfig {
   readonly roles?: Readonly<Record<string, CustomRoleConfig>>;
   readonly git?: { readonly allowWrite?: boolean; readonly requireApproval?: boolean };
   readonly terminal?: { readonly allowExec?: boolean; readonly requireApproval?: boolean; readonly defaultTimeoutMs?: number };
+  readonly browser?: { readonly endpoint?: string; readonly allowControl?: boolean; readonly requireApproval?: boolean; readonly network?: 'none' | 'allowlist' | 'full'; readonly allowedHosts?: readonly string[]; readonly timeoutMs?: number; readonly maxTextBytes?: number; readonly maxScreenshotBytes?: number };
 }
 
 export const defaultConfigPath = (home = homedir()): string => join(home, '.agentcorps', 'config.json');
@@ -64,7 +65,7 @@ export function roleFromConfig(id: string, config: AgentCorpsConfig): RolePreset
 
 function validateConfig(value: unknown, path: string): AgentCorpsConfig {
   if (!isRecord(value) || value.version !== 1) throw new Error(`AgentCorps configuration must contain version: 1: ${path}`);
-  const allowed = new Set(['version', 'paths', 'defaults', 'tools', 'toolDefinitions', 'roles', 'git', 'terminal']);
+  const allowed = new Set(['version', 'paths', 'defaults', 'tools', 'toolDefinitions', 'roles', 'git', 'terminal', 'browser']);
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(`Unknown field in AgentCorps configuration: ${path}`);
   if (value.paths !== undefined) validatePaths(value.paths, path);
   if (value.defaults !== undefined) validateDefaults(value.defaults, path);
@@ -73,6 +74,7 @@ function validateConfig(value: unknown, path: string): AgentCorpsConfig {
   if (value.roles !== undefined) validateRoles(value.roles, path);
   if (value.git !== undefined) validateGit(value.git, path);
   if (value.terminal !== undefined) validateTerminal(value.terminal, path);
+  if (value.browser !== undefined) validateBrowser(value.browser, path);
   return value as unknown as AgentCorpsConfig;
 }
 
@@ -118,6 +120,20 @@ function validateGit(value: unknown, path: string): void {
 
 function validateTerminal(value: unknown, path: string): void {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'allowExec' && key !== 'requireApproval' && key !== 'defaultTimeoutMs') || (value.allowExec !== undefined && typeof value.allowExec !== 'boolean') || (value.requireApproval !== undefined && typeof value.requireApproval !== 'boolean') || (value.defaultTimeoutMs !== undefined && (!Number.isInteger(value.defaultTimeoutMs) || value.defaultTimeoutMs < 1 || value.defaultTimeoutMs > 600000))) throw new Error(`terminal.allowExec, terminal.requireApproval, and terminal.defaultTimeoutMs are invalid: ${path}`);
+}
+
+function validateBrowser(value: unknown, path: string): void {
+  if (!isRecord(value)) throw new Error(`browser must be an object: ${path}`);
+  const allowed = new Set(['endpoint', 'allowControl', 'requireApproval', 'network', 'allowedHosts', 'timeoutMs', 'maxTextBytes', 'maxScreenshotBytes']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(`Unknown field in browser configuration: ${path}`);
+  if (value.endpoint !== undefined && (!isNonEmptyString(value.endpoint) || !/^https?:\/\/[^\s]+$/.test(value.endpoint))) throw new Error(`browser.endpoint must be an HTTP or HTTPS URL: ${path}`);
+  for (const key of ['allowControl', 'requireApproval']) if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`browser.${key} must be a boolean: ${path}`);
+  if (value.network !== undefined && value.network !== 'none' && value.network !== 'allowlist' && value.network !== 'full') throw new Error(`browser.network must be none, allowlist, or full: ${path}`);
+  if (value.allowedHosts !== undefined && (!Array.isArray(value.allowedHosts) || value.allowedHosts.some((host) => !isNonEmptyString(host)))) throw new Error(`browser.allowedHosts must be an array of host strings: ${path}`);
+  for (const key of ['timeoutMs', 'maxTextBytes', 'maxScreenshotBytes']) if (value[key] !== undefined && (!Number.isInteger(value[key]) || value[key] < 1)) throw new Error(`browser.${key} must be a positive integer: ${path}`);
+  if (value.timeoutMs !== undefined && value.timeoutMs > 120000) throw new Error(`browser.timeoutMs cannot exceed 120000: ${path}`);
+  if (value.maxTextBytes !== undefined && value.maxTextBytes > 4 * 1024 * 1024) throw new Error(`browser.maxTextBytes cannot exceed 4194304: ${path}`);
+  if (value.maxScreenshotBytes !== undefined && value.maxScreenshotBytes > 16 * 1024 * 1024) throw new Error(`browser.maxScreenshotBytes cannot exceed 16777216: ${path}`);
 }
 
 function isRecord(value: unknown): value is Record<string, any> { return value !== null && typeof value === 'object' && !Array.isArray(value); }

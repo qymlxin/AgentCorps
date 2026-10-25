@@ -1,4 +1,4 @@
-export type ShortcutAction = 'new-task' | 'overview' | 'sessions' | 'events' | 'files' | 'git' | 'terminal' | 'refresh' | 'palette' | 'help' | 'close';
+export type ShortcutAction = 'new-task' | 'overview' | 'sessions' | 'events' | 'files' | 'git' | 'terminal' | 'browser' | 'refresh' | 'palette' | 'help' | 'close';
 
 export const SHORTCUTS: readonly { readonly keys: string; readonly label: string; readonly action: ShortcutAction }[] = Object.freeze([
   { keys: 'N', label: 'New task', action: 'new-task' },
@@ -8,6 +8,7 @@ export const SHORTCUTS: readonly { readonly keys: string; readonly label: string
   { keys: '4', label: 'Files', action: 'files' },
   { keys: '5', label: 'Git', action: 'git' },
   { keys: '6', label: 'Terminal', action: 'terminal' },
+  { keys: '7', label: 'Browser', action: 'browser' },
   { keys: 'R', label: 'Refresh data', action: 'refresh' },
   { keys: '⌘ K / Ctrl K', label: 'Open command palette', action: 'palette' },
   { keys: '?', label: 'Show keyboard shortcuts', action: 'help' },
@@ -31,6 +32,7 @@ export function shortcutAction(event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'c
     case '4': return 'files';
     case '5': return 'git';
     case '6': return 'terminal';
+    case '7': return 'browser';
     case 'r': case 'R': return 'refresh';
     case '?': return 'help';
     default: return undefined;
