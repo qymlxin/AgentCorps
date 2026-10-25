@@ -43,6 +43,7 @@ export class AgentToolRegistry {
   private readonly decoders = new Map<string, () => AgentOutputDecoder>();
 
   registerDecoder(id: string, factory: () => AgentOutputDecoder): this {
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(id) || typeof factory !== 'function') throw new Error('Invalid output decoder registration');
     if (this.decoders.has(id)) throw new Error(`Duplicate output decoder: ${id}`);
     this.decoders.set(id, factory);
     return this;
@@ -84,21 +85,27 @@ export class AgentToolRegistry {
 }
 
 function validateDefinition(value: AgentToolDefinition): void {
-  if (!/^[a-z][a-z0-9-]{0,63}$/.test(value.id)) throw new Error('Agent tool id must be a lowercase slug');
-  if (!value.displayName?.trim() || !value.command?.trim()) throw new Error('Agent tool requires displayName and command');
+  if (typeof value.id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(value.id)) throw new Error('Agent tool id must be a lowercase slug');
+  if (typeof value.displayName !== 'string' || !value.displayName.trim() || typeof value.command !== 'string' || !value.command.trim()) throw new Error('Agent tool requires displayName and command strings');
   if (value.command.includes('\0')) throw new Error('Invalid agent executable');
   if (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === 'string' && !entry.includes('\0'))) throw new Error('Agent args must be an array of strings');
   if (!['text', 'jsonl'].includes(value.outputFormat)) throw new Error('Agent outputFormat must be text or jsonl');
-  if (value.promptPlacement && !['argument', 'stdin'].includes(value.promptPlacement)) throw new Error('Invalid prompt placement');
-  if (value.promptPlacement === 'stdin' && value.promptFlag) throw new Error('stdin tools cannot declare a prompt flag');
-  for (const flag of [value.promptFlag, value.modelFlag]) if (flag !== undefined && !/^--?[a-zA-Z][a-zA-Z0-9-]*$/.test(flag)) throw new Error('Invalid agent option flag');
-  if (value.versionArgs && (!Array.isArray(value.versionArgs) || !value.versionArgs.every((entry) => typeof entry === 'string'))) throw new Error('versionArgs must be strings');
-  if (value.defaultRole) getRolePreset(value.defaultRole);
+  if (value.promptPlacement !== undefined && !['argument', 'stdin'].includes(value.promptPlacement)) throw new Error('Invalid prompt placement');
+  if (value.promptPlacement === 'stdin' && value.promptFlag !== undefined) throw new Error('stdin tools cannot declare a prompt flag');
+  for (const flag of [value.promptFlag, value.modelFlag]) if (flag !== undefined && (typeof flag !== 'string' || !/^--?[a-zA-Z][a-zA-Z0-9-]*$/.test(flag))) throw new Error('Invalid agent option flag');
+  if (value.versionArgs !== undefined && (!Array.isArray(value.versionArgs) || !value.versionArgs.every((entry) => typeof entry === 'string' && !entry.includes('\0')))) throw new Error('versionArgs must be strings without NUL bytes');
+  if (value.outputProtocol !== undefined && (typeof value.outputProtocol !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(value.outputProtocol) || value.outputFormat !== 'jsonl')) throw new Error('outputProtocol requires a decoder id and jsonl output');
+  if (value.documentationUrl !== undefined && typeof value.documentationUrl !== 'string') throw new Error('documentationUrl must be a string');
+  if (value.defaultRole !== undefined) {
+    if (typeof value.defaultRole !== 'string') throw new Error('defaultRole must be a role id string');
+    getRolePreset(value.defaultRole);
+  }
 }
 
 /** Only explicit, trusted configuration may register executable definitions. */
 export function loadAgentToolDefinitions(value: unknown, registry: AgentToolRegistry): void {
-  if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1 || !('tools' in value) || !Array.isArray(value.tools)) throw new Error('Agent config must contain version: 1 and tools: []');
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !('version' in value) || value.version !== 1 || !('tools' in value) || !Array.isArray(value.tools)) throw new Error('Agent config must contain version: 1 and tools: []');
+  if (Object.keys(value).some((key) => key !== 'version' && key !== 'tools')) throw new Error('Unknown field in agent configuration');
   for (const entry of value.tools) {
     if (!entry || typeof entry !== 'object') throw new Error('Invalid agent tool definition');
     const allowed = new Set(['id', 'displayName', 'command', 'args', 'outputFormat', 'outputProtocol', 'promptPlacement', 'promptFlag', 'modelFlag', 'versionArgs', 'documentationUrl', 'defaultRole']);
