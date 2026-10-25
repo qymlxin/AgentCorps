@@ -1,3 +1,6 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { listenGateway } from './index.js';
 import { TaskRuntime } from '@agentcorps/runtime';
@@ -247,6 +250,33 @@ describe('gateway', () => {
       expect((await fetch(`${base}/tasks`)).status).toBe(401);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('serves a read-only workspace file browser with path and preview boundaries', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentcorps-files-'));
+    const outside = mkdtempSync(join(tmpdir(), 'agentcorps-files-outside-'));
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'src', 'main.ts'), 'export const answer = 42;');
+    writeFileSync(join(outside, 'secret.txt'), 'outside');
+    const server = await listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { files: { root } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      const rootListing = await fetch(`${base}/files`);
+      expect(rootListing.status).toBe(200);
+      expect(await rootListing.json()).toMatchObject({ path: '', entries: [{ name: 'src', kind: 'directory' }] });
+      const nested = await fetch(`${base}/files?path=src`);
+      expect(await nested.json()).toMatchObject({ entries: [{ name: 'main.ts', kind: 'file' }] });
+      const preview = await fetch(`${base}/files/content?path=src/main.ts`);
+      expect(await preview.json()).toMatchObject({ path: 'src/main.ts', content: 'export const answer = 42;' });
+      expect((await fetch(`${base}/files?path=../${outside.split('/').pop()}`)).status).toBe(400);
+      expect((await fetch(`${base}/files/content?path=src/main.ts%00bad`)).status).toBe(400);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 });

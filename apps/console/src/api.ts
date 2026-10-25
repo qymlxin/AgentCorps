@@ -10,6 +10,15 @@ export interface Approval {
   readonly reason: string;
   readonly status: 'pending' | 'approved' | 'denied' | 'expired' | 'consumed';
 }
+export interface FileEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly kind: 'file' | 'directory';
+  readonly size?: number;
+  readonly modifiedAt: string;
+}
+export interface FileListing { readonly root: string; readonly path: string; readonly truncated: boolean; readonly entries: FileEntry[]; }
+export interface FileContent { readonly path: string; readonly content: string; readonly size: number; readonly modifiedAt: string; }
 export interface Connection {
   readonly apiBase: string;
   readonly token: string;
@@ -73,6 +82,13 @@ export class GatewayClient {
   }
   approvals(signal?: AbortSignal): Promise<{ approvals: Approval[] }> {
     return this.request('/approvals', signal ? { signal } : {});
+  }
+  files(path = '', signal?: AbortSignal): Promise<FileListing> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : '';
+    return this.request(`/files${query}`, signal ? { signal } : {});
+  }
+  fileContent(path: string, signal?: AbortSignal): Promise<FileContent> {
+    return this.request(`/files/content?path=${encodeURIComponent(path)}`, signal ? { signal } : {});
   }
   session(id: string, signal?: AbortSignal): Promise<{ session: Session; messages: SessionMessage[] }> {
     return this.request(`/sessions/${encodeURIComponent(id)}`, signal ? { signal } : {});

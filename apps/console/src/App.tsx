@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadConnection, saveConnection, type ApprovalAction, type Connection, type TaskAction } from './api.js';
 import { errorMessage, useDashboard } from './useDashboard.js';
 import { ShortcutOverlay } from './components/Shortcuts.js';
+import { FilesPanel } from './components/FilesPanel.js';
 import { shortcutAction, type ShortcutAction } from './shortcuts.js';
 import { SettingsDialog, TaskDialog } from './components/Dialogs.js';
 import { ApprovalsPanel, EventsPanel, TasksPanel } from './components/Panels.js';
 import { SessionsPanel } from './components/SessionsPanel.js';
 
-type View = 'overview' | 'sessions' | 'events';
+type View = 'overview' | 'sessions' | 'events' | 'files';
 
 export function App() {
   const [connection, setConnection] = useState(loadConnection);
@@ -67,7 +68,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
     <main className="shell">
       <aside className="rail">
         <div className="eyebrow">WORKSPACE</div><div className="workspace-name"><span className="workspace-icon" aria-hidden="true">⌂</span><span>local-workspace</span></div>
-        <nav className="nav" aria-label="Main navigation">{([['overview', '◈', 'Overview'], ['sessions', '◎', 'Sessions'], ['events', '≋', 'Event stream']] as const).map(([value, icon, label]) => <button key={value} className={`nav-item ${view === value ? 'active' : ''}`} aria-current={view === value ? 'page' : undefined} onClick={() => setView(value)}><span aria-hidden="true">{icon}</span>{label}</button>)}</nav>
+        <nav className="nav" aria-label="Main navigation">{([['overview', '◈', 'Overview'], ['sessions', '◎', 'Sessions'], ['events', '≋', 'Event stream'], ['files', '⌁', 'Files']] as const).map(([value, icon, label]) => <button key={value} className={`nav-item ${view === value ? 'active' : ''}`} aria-current={view === value ? 'page' : undefined} onClick={() => setView(value)}><span aria-hidden="true">{icon}</span>{label}</button>)}</nav>
         <div className="rail-footer"><span className="tiny-dot" /><span>LOCAL-FIRST RUNTIME</span><span className="version">v0.1</span></div>
       </aside>
       <section className="content" aria-label="Management console">
@@ -84,6 +85,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
           <ApprovalsPanel approvals={data.approvals} error={data.approvalError} busy={busy} onDecision={decide} />
         </>}
         {view === 'events' && <EventsPanel events={data.events} live={live} />}
+        {view === 'files' && <FilesPanel client={data.client} visible />}
         {view === 'sessions' && <SessionsPanel sessions={data.sessions} client={data.client} visible />}
       </section>
     </main>

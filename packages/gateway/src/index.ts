@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
-import { ApprovalService, ExternalIdentityResolver, InMemoryApprovalStore, InMemoryAuditLog, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
+import { ApprovalService, ExternalIdentityResolver, InMemoryApprovalStore, InMemoryAuditLog, isWithin, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode } from '@agentcorps/session';
 import { MockAgent, type AgentAdapter, type TaskRuntime } from '@agentcorps/runtime';
 import {
@@ -154,6 +156,13 @@ export interface MemoryGatewayOptions {
   readonly allowSensitiveSearch?: boolean;
 }
 
+export interface FileGatewayOptions {
+  /** Absolute or relative local directory exposed as the read-only browser root. */
+  readonly root: string;
+  readonly maxEntries?: number;
+  readonly maxReadBytes?: number;
+}
+
 export interface SecurityGatewayOptions {
   readonly context: SecurityContext;
   readonly engine?: PolicyEngine;
@@ -168,6 +177,7 @@ export interface GatewayOptions {
   readonly corsOrigin?: string;
   readonly channels?: ChannelGatewayOptions;
   readonly memory?: MemoryGatewayOptions;
+  readonly files?: FileGatewayOptions;
   readonly security?: SecurityGatewayOptions;
   readonly agentFactory?: (task: import('@agentcorps/domain').Task) => AgentAdapter;
 }
@@ -298,6 +308,50 @@ function attachWebSocket(server: Server, runtime: TaskRuntime, options: GatewayO
     if (head.length) socket.emit('data', head);
   });
   server.on('close', () => { for (const client of clients) { client.unsubscribe(); client.socket.end(); } clients.clear(); });
+}
+
+function normalizeFilePath(value: string | null): string {
+  const requested = value ?? '';
+  if (requested.includes('\0') || isAbsolute(requested)) throw new Error('File path must be relative to the configured workspace root');
+  return requested;
+}
+
+async function resolveFilePath(root: string, requested: string | null): Promise<{ root: string; path: string; relativePath: string }> {
+  const rootPath = await realpath(resolve(root));
+  const candidate = await realpath(join(rootPath, normalizeFilePath(requested)));
+  if (!isWithin(rootPath, candidate)) throw new Error('File path is outside the configured workspace root');
+  return { root: rootPath, path: candidate, relativePath: relative(rootPath, candidate).split('\\').join('/') };
+}
+
+async function listFiles(options: FileGatewayOptions, requested: string | null): Promise<unknown> {
+  const target = await resolveFilePath(options.root, requested);
+  const directory = await stat(target.path);
+  if (!directory.isDirectory()) throw new Error('File path is not a directory');
+  const maxEntries = options.maxEntries ?? 500;
+  if (!Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > 5000) throw new Error('Invalid file browser entry limit');
+  const entries = await readdir(target.path, { withFileTypes: true });
+  const visible = entries.slice(0, maxEntries);
+  return {
+    root: target.root,
+    path: target.relativePath,
+    truncated: entries.length > visible.length,
+    entries: await Promise.all(visible.map(async (entry) => {
+      const entryPath = await realpath(join(target.path, entry.name));
+      if (!isWithin(target.root, entryPath)) return undefined;
+      const details = await stat(entryPath);
+      return { name: entry.name, path: relative(target.root, entryPath).split('\\').join('/'), kind: details.isDirectory() ? 'directory' : 'file', size: details.isFile() ? details.size : undefined, modifiedAt: details.mtime.toISOString() };
+    })).then((items) => items.filter(Boolean)),
+  };
+}
+
+async function readFileContent(options: FileGatewayOptions, requested: string | null): Promise<unknown> {
+  const target = await resolveFilePath(options.root, requested);
+  const details = await stat(target.path);
+  if (!details.isFile()) throw new Error('File path is not a file');
+  const maxReadBytes = options.maxReadBytes ?? 512 * 1024;
+  if (!Number.isInteger(maxReadBytes) || maxReadBytes < 1 || maxReadBytes > 4 * 1024 * 1024) throw new Error('Invalid file browser read limit');
+  if (details.size > maxReadBytes) throw new Error(`File exceeds the ${maxReadBytes}-byte preview limit`);
+  return { path: target.relativePath, content: await readFile(target.path, 'utf8'), size: details.size, modifiedAt: details.mtime.toISOString() };
 }
 
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
@@ -455,6 +509,12 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           return sendJson(response, 200, { approval: decided });
         }
         return sendJson(response, 404, { error: 'Approval route not found' });
+      }
+      if (options.files && request.method === 'GET' && pathname === '/files') {
+        return sendJson(response, 200, await listFiles(options.files, url.searchParams.get('path')));
+      }
+      if (options.files && request.method === 'GET' && pathname === '/files/content') {
+        return sendJson(response, 200, await readFileContent(options.files, url.searchParams.get('path')));
       }
       const memoryId = memoryIdFrom(pathname);
       if (request.method === 'GET' && pathname === '/memory') {

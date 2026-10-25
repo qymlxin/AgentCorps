@@ -18,6 +18,8 @@ function gateway() {
     if (url.pathname === '/tasks') return Response.json(init?.method === 'POST' ? { task } : { tasks: [task] });
     if (url.pathname === '/sessions') return Response.json(init?.method === 'POST' ? { session } : { sessions: [session] });
     if (url.pathname === `/sessions/${session.id}`) return Response.json({ session, messages: [{ id: 'message-1', sessionId: session.id, role: 'agent', content: '<script>unsafe</script> Review complete.', createdAt: session.createdAt }] });
+    if (url.pathname === '/files') return Response.json({ root: '/workspace', path: url.searchParams.get('path') || '', truncated: false, entries: [{ name: 'README.md', path: 'README.md', kind: 'file', size: 12, modifiedAt: session.createdAt }] });
+    if (url.pathname === '/files/content') return Response.json({ path: 'README.md', content: '# workspace', size: 11, modifiedAt: session.createdAt });
     if (url.pathname === '/approvals') return Response.json({ approvals: [{ id: 'approval-1', request: { capability: 'shell.execute', command: 'git status' }, reason: 'Review command', status: 'pending' }] });
     return Response.json({ ok: true });
   });
@@ -41,6 +43,18 @@ describe('React management console', () => {
     await user.click(screen.getByRole('button', { name: 'Event stream' }));
     expect(screen.getByText('run.output')).toBeTruthy();
   });
+
+  it('browses workspace files and previews a selected text file', async () => {
+    gateway();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(task.title);
+    await user.click(screen.getByRole('button', { name: 'Files' }));
+    await screen.findByText('README.md');
+    await user.click(screen.getByRole('button', { name: /README\.md/ }));
+    expect(await screen.findByText('# workspace')).toBeTruthy();
+  });
+
 
   it('opens the task dialog, command palette, and views from keyboard shortcuts', async () => {
     gateway();

@@ -24,7 +24,7 @@ export interface CustomRoleConfig {
 
 export interface AgentCorpsConfig {
   readonly version: 1;
-  readonly paths?: { readonly dataDir?: string };
+  readonly paths?: { readonly dataDir?: string; readonly workspaceRoot?: string };
   readonly defaults?: {
     readonly agent?: string;
     readonly model?: string;
@@ -74,8 +74,8 @@ function validateConfig(value: unknown, path: string): AgentCorpsConfig {
 
 function validatePaths(value: unknown, path: string): void {
   if (!isRecord(value)) throw new Error(`paths must be an object: ${path}`);
-  if (Object.keys(value).some((key) => key !== 'dataDir')) throw new Error(`Unknown field in paths configuration: ${path}`);
-  if (value.dataDir !== undefined && !isNonEmptyString(value.dataDir)) throw new Error(`paths.dataDir must be a non-empty string: ${path}`);
+  if (Object.keys(value).some((key) => key !== 'dataDir' && key !== 'workspaceRoot')) throw new Error(`Unknown field in paths configuration: ${path}`);
+  for (const key of ['dataDir', 'workspaceRoot']) if (value[key] !== undefined && !isNonEmptyString(value[key])) throw new Error(`paths.${key} must be a non-empty string: ${path}`);
 }
 
 function validateDefaults(value: unknown, path: string): void {
