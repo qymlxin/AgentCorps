@@ -16,6 +16,19 @@ node apps/cli/dist/index.js serve --data-dir ~/.agentcorps
 
 控制台可通过 `pnpm --filter @agentcorps/console dev` 启动，采用 **React 19 + TypeScript + Vite**，使用 Vitest 和 React Testing Library 做前端回归测试；它使用网关的 HTTP、SSE 和 WebSocket 控制面，不直接执行 Agent 命令。远程部署应使用长随机 `--token`，只读设备可使用 `--read-only-token`。
 
+## 外部工具与角色
+
+内置注册了 Codex、Claude Code、Cursor，以及新增的 **Kimi Code、Qwen Code、GLM / ZCode、DeepSeek Harness、OpenCode、Gemini CLI、Aider**。工具必须自行安装并按官方方式配置鉴权。所有工具共享六种提示词角色：开发、审查、规划、测试、安全审查和文档写作，也可以通过显式角色文件自定义。
+
+```bash
+node apps/cli/dist/index.js agents
+node apps/cli/dist/index.js roles
+node apps/cli/dist/index.js task run TASK_ID --agent qwen --role reviewer --instructions "用中文报告已确认的问题"
+node apps/cli/dist/index.js serve --agent kimi --role developer --data-dir ~/.agentcorps
+```
+
+角色通过提示词影响执行，不代表权限限制。`task run` 可逐次选工具；`serve` 参数用于网关启动的所有任务。工具定义、模型参数和输出解码由统一注册表管理；通过 `--agents-config` 可以显式加载可信工具配置，无需增加 CLI 分支。详细用法见 [适配器与扩展机制](docs/07-agent-adapters.md) 和 [各工具接入及验证边界](docs/24-agent-tools.md)。
+
 ## 主要模块
 
 - `packages/domain`：领域对象和事件类型
