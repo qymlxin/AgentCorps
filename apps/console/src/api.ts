@@ -1,0 +1,100 @@
+import type { CreateTaskInput, Task, TaskEvent } from '@agentcorps/domain';
+import type { Session, SessionMessage } from '@agentcorps/session';
+
+export type { Task, TaskEvent, Session, SessionMessage };
+export type TaskAction = 'run' | 'cancel' | 'retry';
+export type ApprovalAction = 'approve' | 'deny';
+export interface Approval {
+  readonly id: string;
+  readonly request: { readonly capability: string; readonly command?: string };
+  readonly reason: string;
+  readonly status: 'pending' | 'approved' | 'denied' | 'expired' | 'consumed';
+}
+export interface Connection {
+  readonly apiBase: string;
+  readonly token: string;
+}
+export interface NewTask {
+  readonly title: string;
+  readonly objective: string;
+  readonly mode: 'code' | 'work';
+  readonly sessionId: string;
+}
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+export const DEFAULT_CONNECTION: Connection = { apiBase: 'http://127.0.0.1:43210', token: '' };
+
+export function normalizeApiBase(value: string): string {
+  const url = new URL(value.trim());
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error('Use an HTTP or HTTPS URL without credentials, query parameters, or a fragment.');
+  }
+  return url.toString().replace(/\/+$/, '');
+}
+
+export function loadConnection(): Connection {
+  try {
+    return {
+      apiBase: normalizeApiBase(localStorage.getItem('agentcorps.apiBase') || DEFAULT_CONNECTION.apiBase),
+      token: localStorage.getItem('agentcorps.token') || '',
+    };
+  } catch { return DEFAULT_CONNECTION; }
+}
+
+export function saveConnection(connection: Connection): void {
+  localStorage.setItem('agentcorps.apiBase', connection.apiBase);
+  localStorage.setItem('agentcorps.token', connection.token);
+}
+
+export class GatewayClient {
+  constructor(readonly connection: Connection) {}
+
+  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers = new Headers(init.headers);
+    headers.set('accept', 'application/json');
+    if (this.connection.token) headers.set('authorization', `Bearer ${this.connection.token}`);
+    if (init.body) headers.set('content-type', 'application/json');
+    const response = await fetch(`${this.connection.apiBase}${path}`, { ...init, headers, cache: 'no-store' });
+    if (!response.ok) {
+      const text = await response.text();
+      let detail = text;
+      try { detail = (JSON.parse(text) as { error?: string }).error || text; } catch { /* plain HTTP error */ }
+      throw new ApiError(response.status, `${response.status} ${detail || response.statusText}`);
+    }
+    return response.json() as Promise<T>;
+  }
+
+  tasks(signal?: AbortSignal): Promise<{ tasks: Task[] }> {
+    return this.request('/tasks', signal ? { signal } : {});
+  }
+  sessions(signal?: AbortSignal): Promise<{ sessions: Session[] }> {
+    return this.request('/sessions', signal ? { signal } : {});
+  }
+  approvals(signal?: AbortSignal): Promise<{ approvals: Approval[] }> {
+    return this.request('/approvals', signal ? { signal } : {});
+  }
+  session(id: string, signal?: AbortSignal): Promise<{ session: Session; messages: SessionMessage[] }> {
+    return this.request(`/sessions/${encodeURIComponent(id)}`, signal ? { signal } : {});
+  }
+  taskAction(id: string, action: TaskAction): Promise<unknown> {
+    return this.request(`/tasks/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+  }
+  decide(id: string, action: ApprovalAction): Promise<unknown> {
+    return this.request(`/approvals/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify({ decidedBy: 'console-user' }) });
+  }
+  async createTask(input: NewTask, sessions: readonly Session[]): Promise<Task> {
+    let sessionId = input.sessionId;
+    const selected = sessionId ? sessions.find((session) => session.id === sessionId) : undefined;
+    if (sessionId && !selected) throw new Error('The selected session is no longer available. Refresh and try again.');
+    const workspaceId = selected?.workspaceId ?? 'local-workspace';
+    if (!sessionId) {
+      const result = await this.request<{ session: Session }>('/sessions', {
+        method: 'POST', body: JSON.stringify({ workspaceId, title: input.title, mode: input.mode }),
+      });
+      sessionId = result.session.id;
+    }
+    const payload: CreateTaskInput = { workspaceId, sessionId, title: input.title, objective: input.objective, mode: input.mode };
+    return (await this.request<{ task: Task }>('/tasks', { method: 'POST', body: JSON.stringify(payload) })).task;
+  }
+}

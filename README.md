@@ -14,7 +14,7 @@ pnpm --filter @agentcorps/cli build
 node apps/cli/dist/index.js serve --data-dir ~/.agentcorps
 ```
 
-控制台可通过 `pnpm --filter @agentcorps/console dev` 启动；它使用网关的 HTTP、SSE 和 WebSocket 控制面，不直接执行 Agent 命令。远程部署应使用长随机 `--token`，只读设备可使用 `--read-only-token`。
+控制台可通过 `pnpm --filter @agentcorps/console dev` 启动，采用 **React 19 + TypeScript + Vite**，使用 Vitest 和 React Testing Library 做前端回归测试；它使用网关的 HTTP、SSE 和 WebSocket 控制面，不直接执行 Agent 命令。远程部署应使用长随机 `--token`，只读设备可使用 `--read-only-token`。
 
 ## 主要模块
 

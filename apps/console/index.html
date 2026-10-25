@@ -1,50 +1,16 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#101318" />
+    <meta name="description" content="AgentCorps local-first task, session, and approval console" />
     <title>AgentCorps / Signal Room</title>
-    <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="manifest" href="./manifest.webmanifest" />
   </head>
   <body>
-    <div class="grain"></div>
-    <header class="topbar">
-      <div class="brand"><span class="brand-mark">◆</span><span>AGENTCORPS</span><small>signal room</small></div>
-      <div class="connection"><span class="pulse" id="health-dot"></span><span id="health-label">connecting</span><button class="icon-button" id="settings-button" title="Connection settings">⚙</button></div>
-    </header>
-    <main class="shell">
-      <aside class="rail">
-        <div class="eyebrow">WORKSPACE</div>
-        <div class="workspace-name"><span class="workspace-icon">⌂</span><span id="workspace-label">local-workspace</span></div>
-        <nav class="nav">
-          <button class="nav-item active" data-view="overview"><span>◈</span> Overview</button>
-          <button class="nav-item" data-view="sessions"><span>◎</span> Sessions</button>
-          <button class="nav-item" data-view="events"><span>≋</span> Event stream</button>
-        </nav>
-        <div class="rail-footer"><span class="tiny-dot"></span><span>LOCAL-FIRST RUNTIME</span><span class="version">v0.1</span></div>
-      </aside>
-      <section class="content">
-        <div class="hero-row">
-          <div><div class="eyebrow">SATURDAY / OCT 24, 2026</div><h1>Control the work.<br /><em>Keep the context.</em></h1><p class="lede">One local command center for every agent, session, and decision.</p></div>
-          <button class="primary-button" id="new-task-button"><span>＋</span> New task</button>
-        </div>
-        <section class="metrics" aria-label="Runtime metrics">
-          <article class="metric"><span class="metric-label">ACTIVE TASKS</span><strong id="active-count">—</strong><span class="metric-note">in the runtime</span></article>
-          <article class="metric accent"><span class="metric-label">SESSIONS</span><strong id="session-count">—</strong><span class="metric-note">shared threads</span></article>
-          <article class="metric"><span class="metric-label">EVENTS</span><strong id="event-count">—</strong><span class="metric-note">replayable facts</span></article>
-          <article class="metric accent"><span class="metric-label">APPROVALS</span><strong id="approval-count">—</strong><span class="metric-note">awaiting decision</span></article>
-        </section>
-        <div class="work-grid">
-          <section class="panel tasks-panel"><div class="panel-head"><div><div class="eyebrow">CURRENT RUNS</div><h2>Tasks in motion</h2></div><button class="text-button" id="refresh-button">Refresh ↗</button></div><div id="tasks-list" class="tasks-list"><div class="empty-state">Loading the local runtime…</div></div></section>
-          <section class="panel activity-panel"><div class="panel-head"><div><div class="eyebrow">LIVE FEED</div><h2>Recent events</h2></div><span class="live-tag"><span class="tiny-dot"></span> LIVE</span></div><div id="events-list" class="events-list"><div class="empty-state">Waiting for events…</div></div></section>
-        </div>
-        <section class="panel approvals-panel"><div class="panel-head"><div><div class="eyebrow">DECISIONS</div><h2>Approval queue</h2></div><span class="muted">Read-only progress works without this endpoint</span></div><div id="approvals-list" class="approvals-list"><div class="empty-state">No approval data available.</div></div></section>
-      </section>
-    </main>
-    <dialog id="task-dialog" class="task-dialog"><form method="dialog" id="task-form"><div class="dialog-head"><div><div class="eyebrow">NEW WORK UNIT</div><h2>Start a task</h2></div><button value="cancel" class="close-button" aria-label="Close">×</button></div><label>Title<input name="title" required placeholder="e.g. Review the release plan" /></label><label>Objective<textarea name="objective" required placeholder="What should the agents accomplish?"></textarea></label><div class="form-row"><label>Mode<select name="mode"><option value="code">Code / vibe coding</option><option value="work">Work / office flow</option></select></label><label>Session<select name="sessionId" id="session-select"><option value="">Create new session</option></select></label></div><div class="dialog-actions"><button value="cancel" class="secondary-button">Cancel</button><button value="default" class="primary-button">Create task <span>→</span></button></div></form></dialog>
-    <dialog id="settings-dialog" class="task-dialog"><form method="dialog" id="settings-form"><div class="dialog-head"><div><div class="eyebrow">LOCAL CONNECTION</div><h2>Runtime endpoint</h2></div><button value="cancel" class="close-button" aria-label="Close">×</button></div><label>API base URL<input id="api-base-input" required value="http://127.0.0.1:43210" /></label><label>Bearer token <span class="muted">optional for local mode</span><input id="token-input" type="password" placeholder="Stored only in this browser" /></label><div class="dialog-actions"><button value="cancel" class="secondary-button">Cancel</button><button value="default" class="primary-button">Save connection <span>→</span></button></div></form></dialog>
-    <script type="module" src="app.js"></script>
+    <div id="root"></div>
+    <noscript>Enable JavaScript to use the AgentCorps management console.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
