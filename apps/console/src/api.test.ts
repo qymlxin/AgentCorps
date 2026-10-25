@@ -45,6 +45,19 @@ describe('gateway client', () => {
     expect(JSON.parse(fetcher.mock.calls[1]![1].body).sessionId).toBe('session-new');
   });
 
+  it('sends Git paths and commit messages as structured JSON', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ decision: 'approval_required', approval: { id: 'approval-git' } }, { status: 202 })).mockResolvedValueOnce(Response.json({ decision: 'approval_required', approval: { id: 'approval-git-2' } }, { status: 202 })).mockResolvedValueOnce(Response.json({ branch: 'main', entries: [] }));
+    vi.stubGlobal('fetch', fetcher);
+    const client = new GatewayClient(connection);
+    await client.gitStage(['src/main.ts']);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(`${connection.apiBase}/git/stage`);
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ paths: ['src/main.ts'], taskId: 'console-git' });
+    await client.gitCommit('release notes');
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ message: 'release notes', taskId: 'console-git' });
+    await client.gitStage(['src/main.ts'], 'console-git', 'approval-git-3');
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toEqual({ paths: ['src/main.ts'], taskId: 'console-git', approvalId: 'approval-git-3' });
+  });
+
   it('surfaces gateway permission errors to the caller', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: 'Insufficient gateway role' }, { status: 403 })));
     await expect(new GatewayClient(connection).taskAction('task-1', 'run')).rejects.toThrow('403 Insufficient gateway role');

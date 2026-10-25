@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -6,6 +8,8 @@ import { listenGateway } from './index.js';
 import { TaskRuntime } from '@agentcorps/runtime';
 import { signHmacSha256, encryptWecomMessage, signWecomCallback, parseWecomEncryptedInbound } from '@agentcorps/channels';
 import { createDefaultProfile, DevicePairingService, DeviceTokenVerifier, ExternalIdentityResolver, InMemoryDeviceIdentityStore, InMemoryExternalIdentityBindingStore, SignedAccessTokenService } from '@agentcorps/security';
+
+const gitAsync = promisify(execFile);
 
 describe('gateway', () => {
   it('exposes health, task creation, and task event history', async () => {
@@ -277,6 +281,50 @@ describe('gateway', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       rmSync(root, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('browses Git state and gates write operations with approvals', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentcorps-git-'));
+    const server = await (async () => {
+      await gitAsync('git', ['init', '-q', root]);
+      await gitAsync('git', ['-C', root, 'config', 'user.email', 'test@example.com']);
+      await gitAsync('git', ['-C', root, 'config', 'user.name', 'AgentCorps Test']);
+      writeFileSync(join(root, 'README.md'), 'hello');
+      await gitAsync('git', ['-C', root, 'add', 'README.md']);
+      await gitAsync('git', ['-C', root, 'commit', '-qm', 'initial']);
+      writeFileSync(join(root, 'README.md'), 'changed');
+      return listenGateway(new TaskRuntime(), 0, '127.0.0.1', undefined, { git: { root, allowWrite: true }, security: { context: { mode: 'code', profile: createDefaultProfile(root, 'S2') } } });
+    })();
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      const status = await (await fetch(`${base}/git/status`)).json() as { branch: string; entries: Array<{ path: string; worktree: string }> };
+      expect(status.branch).toEqual(expect.any(String));
+      expect(status.branch.length).toBeGreaterThan(0);
+      expect(status.entries).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'README.md', worktree: 'M' })]));
+      expect((await fetch(`${base}/git/log?limit=1`)).status).toBe(200);
+      const diff = await (await fetch(`${base}/git/diff?path=README.md`)).text();
+      expect(diff).toContain('-hello');
+      const pending = await fetch(`${base}/git/stage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'git-task', paths: ['README.md'] }) });
+      expect(pending.status).toBe(202);
+      const approval = (await pending.json() as { approval: { id: string } }).approval;
+      await fetch(`${base}/approvals/${approval.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decidedBy: 'test-user' }) });
+      const staged = await fetch(`${base}/git/stage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'git-task', paths: ['README.md'], approvalId: approval.id }) });
+      expect((await staged.json() as { entries: Array<{ index: string }> }).entries[0]?.index).toBe('M');
+      const commitPending = await fetch(`${base}/git/commit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'git-task', message: 'change README' }) });
+      expect(commitPending.status).toBe(202);
+      const commitApproval = (await commitPending.json() as { approval: { id: string } }).approval;
+      expect((await fetch(`${base}/approvals/${commitApproval.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decidedBy: 'test-user' }) })).status).toBe(200);
+      const committed = await fetch(`${base}/git/commit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: 'git-task', message: 'change README', approvalId: commitApproval.id }) });
+      expect(committed.status).toBe(200);
+      expect((await committed.json() as { hash: string; status: { entries: unknown[] } }).hash).toMatch(/^[0-9a-f]+$/);
+      const finalStatus = await (await fetch(`${base}/git/status`)).json() as { entries: unknown[] };
+      expect(finalStatus.entries).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

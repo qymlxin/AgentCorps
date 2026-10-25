@@ -29,6 +29,8 @@ import {
   type OutboundMessage,
 } from '@agentcorps/channels';
 
+import { gitAdd, gitCommit, gitDiff, gitLog, gitRestoreStaged, gitStatus, type GitGatewayOptions } from './git.js';
+
 const MAX_BODY_BYTES = 1024 * 1024;
 
 type JsonRecord = Record<string, unknown>;
@@ -178,6 +180,7 @@ export interface GatewayOptions {
   readonly channels?: ChannelGatewayOptions;
   readonly memory?: MemoryGatewayOptions;
   readonly files?: FileGatewayOptions;
+  readonly git?: GitGatewayOptions;
   readonly security?: SecurityGatewayOptions;
   readonly agentFactory?: (task: import('@agentcorps/domain').Task) => AgentAdapter;
 }
@@ -354,6 +357,37 @@ async function readFileContent(options: FileGatewayOptions, requested: string | 
   return { path: target.relativePath, content: await readFile(target.path, 'utf8'), size: details.size, modifiedAt: details.mtime.toISOString() };
 }
 
+interface GitMutationAuthorization { readonly allowed: boolean; readonly status?: number; readonly body?: unknown; }
+
+function gitMutationTaskId(body: JsonRecord, operation: string): string {
+  const value = body.taskId === undefined ? `git:${operation}` : String(body.taskId);
+  if (!value.trim()) throw new Error('Git mutation requires a taskId');
+  return value;
+}
+
+function gitMutationCommand(operation: string, value: unknown): string {
+  const command = operation === 'restore-staged' ? 'restore --staged' : operation;
+  return `git ${command} ${JSON.stringify(value)}`;
+}
+
+function authorizeGitMutation(options: GatewayOptions, policyEngine: PolicyEngine, approvals: ApprovalService, operation: string, command: string, body: JsonRecord): GitMutationAuthorization {
+  if (!options.git?.allowWrite) return { allowed: false, status: 403, body: { error: 'Git write operations are disabled' } };
+  if (options.git.requireApproval !== false && !options.security) return { allowed: false, status: 503, body: { error: 'Git write operations require an explicit security context' } };
+  const taskId = gitMutationTaskId(body, operation);
+  const approvalId = body.approvalId ? String(body.approvalId) : undefined;
+  if (approvalId) {
+    const approval = approvals.get(approvalId);
+    if (!approval || approval.status !== 'approved' || approval.request.taskId !== taskId || approval.request.command !== command) return { allowed: false, status: 409, body: { error: 'Git approval is missing, expired, or does not match this operation' } };
+    return approvals.consume(approvalId) ? { allowed: true } : { allowed: false, status: 409, body: { error: 'Git approval could not be consumed' } };
+  }
+  if (options.git.requireApproval === false) return { allowed: true };
+  const request: ToolRequest = { requestId: `git:${crypto.randomUUID()}`, taskId, capability: 'process.exec', command };
+  const policy = policyEngine.evaluate(request, options.security!.context);
+  if (policy.decision === 'deny') return { allowed: false, status: 403, body: { decision: policy.decision, policy } };
+  if (policy.decision === 'allow') return { allowed: true };
+  return { allowed: false, status: 202, body: { decision: policy.decision, policy, approval: approvals.create(request, policy) } };
+}
+
 export function createGatewayServer(runtime: TaskRuntime, sessions = new SessionService(new InMemorySessionStore()), options: GatewayOptions = {}): Server {
   const adapters = { ...defaultChannelAdapters(), ...options.channels?.adapters };
   const stateStore = options.channels?.stateStore ?? new InMemoryChannelStateStore();
@@ -510,6 +544,21 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
         }
         return sendJson(response, 404, { error: 'Approval route not found' });
       }
+      if (options.git && request.method === 'GET' && pathname === '/git/status') return sendJson(response, 200, await gitStatus(options.git));
+      if (options.git && request.method === 'GET' && pathname === '/git/log') return sendJson(response, 200, { commits: await gitLog(options.git, Number(url.searchParams.get('limit') ?? '30')) });
+      if (options.git && request.method === 'GET' && pathname === '/git/diff') return sendJson(response, 200, await gitDiff(options.git, url.searchParams.get('path') ?? undefined));
+      if (options.git && request.method === 'POST' && (pathname === '/git/stage' || pathname === '/git/unstage' || pathname === '/git/commit')) {
+        const body = await readJson(request);
+        if (pathname === '/git/commit' && typeof body.message !== 'string') throw new Error('Git commit requires a message');
+        const paths = body.paths === undefined ? [] : Array.isArray(body.paths) ? body.paths.map(String) : (() => { throw new Error('Git paths must be an array'); })();
+        const operation = pathname === '/git/stage' ? 'add' : pathname === '/git/unstage' ? 'restore-staged' : 'commit';
+        const operationValue = pathname === '/git/commit' ? String(body.message) : paths;
+        const authorization = authorizeGitMutation(options, policyEngine, approvals, operation, gitMutationCommand(operation, operationValue), body);
+        if (!authorization.allowed) return sendJson(response, authorization.status ?? 409, authorization.body ?? { error: 'Git operation was not authorized' });
+        if (pathname === '/git/stage') return sendJson(response, 200, await gitAdd(options.git, paths));
+        if (pathname === '/git/unstage') return sendJson(response, 200, await gitRestoreStaged(options.git, paths));
+        return sendJson(response, 200, await gitCommit(options.git, String(body.message)));
+      }
       if (options.files && request.method === 'GET' && pathname === '/files') {
         return sendJson(response, 200, await listFiles(options.files, url.searchParams.get('path')));
       }
@@ -641,3 +690,6 @@ export function listenGateway(runtime: TaskRuntime, port = 43210, host = '127.0.
     });
   });
 }
+
+export { gitAdd, gitCommit, gitDiff, gitLog, gitRestoreStaged, gitStatus } from './git.js';
+export type { GitCommit, GitGatewayOptions, GitStatus, GitStatusEntry } from './git.js';

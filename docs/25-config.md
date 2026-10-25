@@ -20,7 +20,8 @@ AgentCorps 从 `~/.agentcorps/config.json` 自动读取本地配置。也可以�
 {
   "version": 1,
   "paths": {
-    "dataDir": "~/.agentcorps"
+    "dataDir": "~/.agentcorps",
+    "workspaceRoot": "~/workspace"
   },
   "defaults": {
     "agent": "kimi",
@@ -34,6 +35,10 @@ AgentCorps 从 `~/.agentcorps/config.json` 自动读取本地配置。也可以�
       "cwd": "~/workspace",
       "timeoutMs": 600000
     }
+  },
+  "git": {
+    "allowWrite": true,
+    "requireApproval": true
   },
   "roles": {
     "release-reviewer": {
@@ -72,6 +77,7 @@ AgentCorps 从 `~/.agentcorps/config.json` 自动读取本地配置。也可以�
 - 配置中的命令被视为本地管理员明确配置的可执行文件，AgentCorps 不把角色提示词当作权限。
 - Codex、Claude Code、Kimi、Qwen 等工具的登录信息和 Provider 设置继续由各自原生配置管理，不复制到 AgentCorps 配置。
 - `cwd` 只设置 Agent 子进程的工作目录；终端、Git、浏览器等高风险能力仍须经过独立的策略和审批检查。
+- `paths.workspaceRoot` 作为桌面文件浏览和 Git Gateway 的默认工作区边界；Git 写入还需要 `git.allowWrite: true`，并默认要求 `git.requireApproval: true`。
 
 ## 设计图
 

@@ -6,7 +6,7 @@ export type TaskAction = 'run' | 'cancel' | 'retry';
 export type ApprovalAction = 'approve' | 'deny';
 export interface Approval {
   readonly id: string;
-  readonly request: { readonly capability: string; readonly command?: string };
+  readonly request: { readonly capability: string; readonly taskId?: string; readonly command?: string };
   readonly reason: string;
   readonly status: 'pending' | 'approved' | 'denied' | 'expired' | 'consumed';
 }
@@ -19,6 +19,12 @@ export interface FileEntry {
 }
 export interface FileListing { readonly root: string; readonly path: string; readonly truncated: boolean; readonly entries: FileEntry[]; }
 export interface FileContent { readonly path: string; readonly content: string; readonly size: number; readonly modifiedAt: string; }
+export interface GitStatusEntry { readonly index: string; readonly worktree: string; readonly path: string; }
+export interface GitStatus { readonly branch: string; readonly upstream?: string; readonly entries: GitStatusEntry[]; }
+export interface GitCommit { readonly hash: string; readonly author: string; readonly committedAt: string; readonly subject: string; }
+export interface GitCommitResult { readonly hash: string; readonly status: GitStatus; }
+export interface GitApprovalResult { readonly decision: 'approval_required'; readonly approval: Approval; }
+export type GitMutationResult = GitStatus | GitCommitResult | GitApprovalResult;
 export interface Connection {
   readonly apiBase: string;
   readonly token: string;
@@ -89,6 +95,25 @@ export class GatewayClient {
   }
   fileContent(path: string, signal?: AbortSignal): Promise<FileContent> {
     return this.request(`/files/content?path=${encodeURIComponent(path)}`, signal ? { signal } : {});
+  }
+  gitStatus(signal?: AbortSignal): Promise<GitStatus> {
+    return this.request('/git/status', signal ? { signal } : {});
+  }
+  gitLog(limit = 20, signal?: AbortSignal): Promise<{ commits: GitCommit[] }> {
+    return this.request(`/git/log?limit=${limit}`, signal ? { signal } : {});
+  }
+  gitDiff(path?: string, signal?: AbortSignal): Promise<{ path?: string; diff: string }> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : '';
+    return this.request(`/git/diff${query}`, signal ? { signal } : {});
+  }
+  gitStage(paths: string[], taskId = 'console-git', approvalId?: string): Promise<GitMutationResult> {
+    return this.request('/git/stage', { method: 'POST', body: JSON.stringify({ paths, taskId, ...(approvalId ? { approvalId } : {}) }) });
+  }
+  gitUnstage(paths: string[], taskId = 'console-git', approvalId?: string): Promise<GitMutationResult> {
+    return this.request('/git/unstage', { method: 'POST', body: JSON.stringify({ paths, taskId, ...(approvalId ? { approvalId } : {}) }) });
+  }
+  gitCommit(message: string, taskId = 'console-git', approvalId?: string): Promise<GitMutationResult> {
+    return this.request('/git/commit', { method: 'POST', body: JSON.stringify({ message, taskId, ...(approvalId ? { approvalId } : {}) }) });
   }
   session(id: string, signal?: AbortSignal): Promise<{ session: Session; messages: SessionMessage[] }> {
     return this.request(`/sessions/${encodeURIComponent(id)}`, signal ? { signal } : {});

@@ -34,6 +34,7 @@ export interface AgentCorpsConfig {
   readonly tools?: Readonly<Record<string, AgentRuntimeConfig>>;
   readonly toolDefinitions?: readonly AgentToolDefinition[];
   readonly roles?: Readonly<Record<string, CustomRoleConfig>>;
+  readonly git?: { readonly allowWrite?: boolean; readonly requireApproval?: boolean };
 }
 
 export const defaultConfigPath = (home = homedir()): string => join(home, '.agentcorps', 'config.json');
@@ -62,13 +63,14 @@ export function roleFromConfig(id: string, config: AgentCorpsConfig): RolePreset
 
 function validateConfig(value: unknown, path: string): AgentCorpsConfig {
   if (!isRecord(value) || value.version !== 1) throw new Error(`AgentCorps configuration must contain version: 1: ${path}`);
-  const allowed = new Set(['version', 'paths', 'defaults', 'tools', 'toolDefinitions', 'roles']);
+  const allowed = new Set(['version', 'paths', 'defaults', 'tools', 'toolDefinitions', 'roles', 'git']);
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(`Unknown field in AgentCorps configuration: ${path}`);
   if (value.paths !== undefined) validatePaths(value.paths, path);
   if (value.defaults !== undefined) validateDefaults(value.defaults, path);
   if (value.tools !== undefined) validateTools(value.tools, path);
   if (value.toolDefinitions !== undefined && (!Array.isArray(value.toolDefinitions) || value.toolDefinitions.some((entry) => !isRecord(entry)))) throw new Error(`toolDefinitions must be an array of tool definitions: ${path}`);
   if (value.roles !== undefined) validateRoles(value.roles, path);
+  if (value.git !== undefined) validateGit(value.git, path);
   return value as unknown as AgentCorpsConfig;
 }
 
@@ -106,6 +108,10 @@ function validateRoles(value: unknown, path: string): void {
     const allowed = new Set(['displayName', 'description', 'prompt']);
     if (Object.keys(role).some((key) => !allowed.has(key)) || !isNonEmptyString(role.displayName) || !isNonEmptyString(role.description) || !isNonEmptyString(role.prompt)) throw new Error(`Invalid custom role: ${id}`);
   }
+}
+
+function validateGit(value: unknown, path: string): void {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'allowWrite' && key !== 'requireApproval') || (value.allowWrite !== undefined && typeof value.allowWrite !== 'boolean') || (value.requireApproval !== undefined && typeof value.requireApproval !== 'boolean')) throw new Error(`git.allowWrite and git.requireApproval must be booleans: ${path}`);
 }
 
 function isRecord(value: unknown): value is Record<string, any> { return value !== null && typeof value === 'object' && !Array.isArray(value); }

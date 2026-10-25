@@ -20,7 +20,7 @@ function usage(): never {
 
 Commands:
   demo                                      Run an in-memory local demo
-  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH]    Start the local HTTP/SSE/WebSocket gateway
+  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval]    Start the local HTTP/SSE/WebSocket gateway
   task create --title T --objective O       Create a persistent task
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
@@ -542,6 +542,7 @@ async function main(): Promise<void> {
       ...(corsOrigin ? { corsOrigin } : {}),
       channels: { stateStore: channelState, ...(identityResolver ? { identityResolver } : {}) },
       files: { root: workspaceRoot },
+      git: { root: workspaceRoot, allowWrite: hasFlag('--git-write') || agentCorpsConfig().git?.allowWrite === true, requireApproval: !hasFlag('--git-no-approval') && agentCorpsConfig().git?.requireApproval !== false },
       memory: { service: memories },
       security: { context: { mode: 'code' as const, profile: createDefaultProfile(workspaceRoot, 'S2') }, engine: new PolicyEngine(audit), approvals: new ApprovalService(approvalStore), allowApprovalDecisions: true },
       agentFactory: () => agentForRun(),

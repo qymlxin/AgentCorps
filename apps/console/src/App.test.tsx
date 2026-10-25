@@ -20,6 +20,9 @@ function gateway() {
     if (url.pathname === `/sessions/${session.id}`) return Response.json({ session, messages: [{ id: 'message-1', sessionId: session.id, role: 'agent', content: '<script>unsafe</script> Review complete.', createdAt: session.createdAt }] });
     if (url.pathname === '/files') return Response.json({ root: '/workspace', path: url.searchParams.get('path') || '', truncated: false, entries: [{ name: 'README.md', path: 'README.md', kind: 'file', size: 12, modifiedAt: session.createdAt }] });
     if (url.pathname === '/files/content') return Response.json({ path: 'README.md', content: '# workspace', size: 11, modifiedAt: session.createdAt });
+    if (url.pathname === '/git/status') return Response.json({ branch: 'main', entries: [{ index: ' ', worktree: 'M', path: 'README.md' }] });
+    if (url.pathname === '/git/log') return Response.json({ commits: [{ hash: 'abcdef1234567890', author: 'AgentCorps', committedAt: session.createdAt, subject: 'initial' }] });
+    if (url.pathname === '/git/diff') return Response.json({ path: 'README.md', diff: '-hello\\n+changed' });
     if (url.pathname === '/approvals') return Response.json({ approvals: [{ id: 'approval-1', request: { capability: 'shell.execute', command: 'git status' }, reason: 'Review command', status: 'pending' }] });
     return Response.json({ ok: true });
   });
@@ -55,6 +58,20 @@ describe('React management console', () => {
     expect(await screen.findByText('# workspace')).toBeTruthy();
   });
 
+  it('browses Git changes and exposes approval-gated write actions', async () => {
+    const fetcher = gateway();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(task.title);
+    await user.click(screen.getByRole('button', { name: 'Git' }));
+    expect(await screen.findByRole('heading', { name: 'Git' })).toBeTruthy();
+    expect((await screen.findByText(/-hello/)).textContent).toContain('-hello');
+    expect(screen.getByText('initial')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Stage selected' }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/git/stage'))).toBe(true));
+    expect(JSON.parse(String(fetcher.mock.calls.find(([url]) => String(url).endsWith('/git/stage'))?.[1]?.body))).toMatchObject({ paths: ['README.md'], taskId: 'console-git' });
+  });
+
 
   it('opens the task dialog, command palette, and views from keyboard shortcuts', async () => {
     gateway();
@@ -74,6 +91,8 @@ describe('React management console', () => {
     expect(screen.getByRole('button', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     await user.keyboard('3');
     expect(screen.getByRole('button', { name: 'Event stream' }).getAttribute('aria-current')).toBe('page');
+    await user.keyboard('5');
+    expect(screen.getByRole('button', { name: 'Git' }).getAttribute('aria-current')).toBe('page');
   });
 
   it('does not trigger letter shortcuts while editing form fields', async () => {

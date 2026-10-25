@@ -23,6 +23,8 @@ describe('AgentCorps configuration', () => {
       expect(() => loadAgentCorpsConfig(path)).toThrow('Unknown field in defaults configuration');
       writeFileSync(path, JSON.stringify({ version: 1, tools: { kimi: { timeoutMs: 0 } } }));
       expect(() => loadAgentCorpsConfig(path)).toThrow('timeoutMs must be a positive integer');
+      writeFileSync(path, JSON.stringify({ version: 1, git: { allowWrite: 'yes' } }));
+      expect(() => loadAgentCorpsConfig(path)).toThrow('git.allowWrite and git.requireApproval must be booleans');
       writeFileSync(path, '{');
       expect(() => loadAgentCorpsConfig(path)).toThrow('Invalid AgentCorps JSON configuration');
     } finally {
