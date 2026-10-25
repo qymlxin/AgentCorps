@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -161,6 +161,38 @@ describe('CLI', () => {
       expect(listed.map((task) => task.id)).toContain(created.id);
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-loads the home configuration without --agents-config and honors CLI overrides', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentcorps-home-'));
+    const dataDir = mkdtempSync(join(tmpdir(), 'agentcorps-config-data-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'agentcorps-config-workspace-'));
+    try {
+      const fixture = join(workspace, 'configured-tool.cjs');
+      mkdirSync(join(home, '.agentcorps'), { recursive: true });
+      writeFileSync(fixture, "const args=process.argv.slice(2); const model=args[args.indexOf('--model')+1]; const prompt=args.at(-1); if(model!==(process.env.EXPECTED_MODEL||'config-model') || process.cwd()!==process.env.EXPECTED_CWD || !prompt.includes('Configured reviewer') || !prompt.includes('Configured instructions') || !prompt.includes('auto config')) process.exit(7); console.log('auto config works')");
+      writeFileSync(join(home, '.agentcorps', 'config.json'), JSON.stringify({
+        version: 1,
+        paths: { dataDir },
+        defaults: { agent: 'fixture-tool', model: 'config-model', role: 'configured-reviewer', instructions: 'Configured instructions' },
+        tools: { 'fixture-tool': { cwd: workspace } },
+        toolDefinitions: [{ id: 'fixture-tool', displayName: 'Fixture tool', command: process.execPath, args: [fixture], outputFormat: 'text', promptPlacement: 'argument', modelFlag: '--model' }],
+        roles: { 'configured-reviewer': { displayName: 'Configured reviewer', description: 'Fixture role', prompt: 'Configured reviewer' } },
+      }, null, 2));
+      const env = { ...process.env, HOME: home, EXPECTED_CWD: realpathSync(workspace), EXPECTED_MODEL: 'config-model' };
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Auto config', '--objective', 'auto config'], { env })).stdout) as { id: string };
+      const configuredRun = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id], { env })).stdout) as { status: string };
+      expect(configuredRun.status).toBe('succeeded');
+      const overrideTask = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'CLI override', '--objective', 'auto config'], { env })).stdout) as { id: string };
+      const cliOverride = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', overrideTask.id, '--model', 'cli-model'], { env: { ...env, EXPECTED_MODEL: 'cli-model' } })).stdout) as { status: string };
+      expect(cliOverride.status).toBe('succeeded');
+      const roles = JSON.parse((await execFileAsync('node', ['dist/index.js', 'roles'], { env })).stdout) as Array<{ id: string }>;
+      expect(roles.map((role) => role.id)).toContain('configured-reviewer');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 });

@@ -1,6 +1,6 @@
 /** Value options consume exactly one opaque argument, including vendor flags. */
 const VALUE_OPTIONS = new Set([
-  '--port', '--host', '--token', '--read-only-token', '--data-dir', '--cors-origin',
+  '--port', '--host', '--token', '--read-only-token', '--data-dir', '--config', '--cors-origin',
   '--title', '--objective', '--mode', '--agent', '--agents-config', '--model',
   '--role', '--role-file', '--instructions', '--agent-command', '--agent-arg', '--command',
   '--sandbox-backend', '--container-image', '--sandbox-network', '--sandbox-memory-mb', '--sandbox-cpu', '--sandbox-pids',

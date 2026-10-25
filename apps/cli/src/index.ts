@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { parseCommandOptions } from './options.js';
+import { defaultConfigPath, loadAgentCorpsConfig, resolveConfiguredPath, roleFromConfig, type AgentCorpsConfig, type AgentRuntimeConfig } from './config.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -27,7 +28,7 @@ Commands:
   agents                                    List configured external agent tools
   roles                                     List reusable role prompt presets
   task run TASK_ID [--agent mock|TOOL|command] [--data-dir PATH]
-       [--agents-config PATH] [--model MODEL]
+       [--config PATH] [--agents-config PATH] [--model MODEL]
        [--role developer|reviewer|planner|tester|security|writer] [--role-file PATH] [--instructions TEXT]
        [--agent-command PATH] [--agent-arg ARG] [--sandbox-backend macos|container]
        [--container-image IMAGE] [--sandbox-network full] [--sandbox-memory-mb N] [--sandbox-cpu N] [--sandbox-pids N]
@@ -88,13 +89,49 @@ function repeatedFlag(name: string): readonly string[] {
   return options().get(name) ?? [];
 }
 
+let configuredAgentCorpsConfig: AgentCorpsConfig | undefined;
+function agentCorpsConfig(): AgentCorpsConfig {
+  if (configuredAgentCorpsConfig) return configuredAgentCorpsConfig;
+  configuredAgentCorpsConfig = loadAgentCorpsConfig(flag('--config') ?? defaultConfigPath());
+  return configuredAgentCorpsConfig;
+}
+
+function runtimeConfig(agentId: string): AgentRuntimeConfig {
+  return agentCorpsConfig().tools?.[agentId] ?? {};
+}
+
+function selectedAgentId(): string {
+  return flag('--agent') ?? agentCorpsConfig().defaults?.agent ?? 'mock';
+}
+
+function selectedRole(): { role?: RolePreset; configured: boolean } {
+  const config = agentCorpsConfig();
+  const configured = runtimeConfig(selectedAgentId());
+  const roleId = flag('--role') ?? configured.role ?? config.defaults?.role;
+  const roleFile = flag('--role-file');
+  if (roleId && roleFile) throw new Error('--role and --role-file are mutually exclusive');
+  if (roleFile) {
+    const prompt = readFileSync(resolveConfiguredPath(roleFile), 'utf8').trim();
+    if (!prompt || Buffer.byteLength(prompt) > 64 * 1024) throw new Error('--role-file must contain between 1 and 65536 bytes of prompt text');
+    return { configured: true, role: { id: 'custom', displayName: 'Custom role', description: 'Explicitly configured prompt file', prompt } };
+  }
+  if (!roleId) return { configured: false };
+  return { configured: true, role: roleFromConfig(roleId, config) ?? getRolePreset(roleId) };
+}
+
+function agentInstructions(): string | undefined {
+  return flag('--instructions') ?? runtimeConfig(selectedAgentId()).instructions ?? agentCorpsConfig().defaults?.instructions;
+}
+
 let configuredTools: ReturnType<typeof createAgentToolRegistry> | undefined;
 function agentTools() {
   if (configuredTools) return configuredTools;
   const registry = createAgentToolRegistry();
-  const config = flag('--agents-config');
-  if (config) {
-    const contents = readFileSync(config, 'utf8');
+  const config = agentCorpsConfig();
+  if (config.toolDefinitions?.length) loadAgentToolDefinitions({ version: 1, tools: config.toolDefinitions }, registry);
+  const compatibilityConfig = flag('--agents-config');
+  if (compatibilityConfig) {
+    const contents = readFileSync(resolveConfiguredPath(compatibilityConfig), 'utf8');
     if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Agent configuration exceeds 1 MiB');
     loadAgentToolDefinitions(JSON.parse(contents) as unknown, registry);
   }
@@ -103,61 +140,59 @@ function agentTools() {
 }
 
 function agentForRun(): AgentAdapter {
-  const roleId = flag('--role');
-  const roleFile = flag('--role-file');
-  if (roleId && roleFile) throw new Error('--role and --role-file are mutually exclusive');
-  let role: RolePreset | undefined = roleId ? getRolePreset(roleId) : undefined;
-  if (roleFile) {
-    const prompt = readFileSync(roleFile, 'utf8').trim();
-    if (!prompt || Buffer.byteLength(prompt) > 64 * 1024) throw new Error('--role-file must contain between 1 and 65536 bytes of prompt text');
-    role = { id: 'custom', displayName: 'Custom role', description: 'Explicitly configured prompt file', prompt };
-  }
-  const instructions = flag('--instructions');
-  return withRole(unconfiguredAgentForRun(), { ...(role ? { role } : {}), ...(instructions ? { instructions } : {}) });
+  const roleSelection = selectedRole();
+  const instructions = agentInstructions();
+  return withRole(unconfiguredAgentForRun(roleSelection.configured), { ...(roleSelection.role ? { role: roleSelection.role } : {}), ...(instructions !== undefined ? { instructions } : {}) });
 }
 
-function unconfiguredAgentForRun(): AgentAdapter {
-  const selected = flag('--agent') ?? 'mock';
-  const command = flag('--agent-command');
-  const args = repeatedFlag('--agent-arg');
+function unconfiguredAgentForRun(roleConfigured = false): AgentAdapter {
+  const selected = selectedAgentId();
+  const configured = runtimeConfig(selected);
+  const command = flag('--agent-command') ?? configured.command;
+  const args = options().has('--agent-arg') ? repeatedFlag('--agent-arg') : configured.args;
   if (selected === 'mock') return new MockAgent();
   if (selected === 'command') {
-    if (!command) throw new Error('--agent-command is required for --agent command');
-    const sandbox = commandSandbox();
-    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, args, outputFormat: 'text', promptPlacement: 'argument', ...(sandbox ? { sandbox } : {}) });
+    if (!command) throw new Error('--agent-command or tools.command is required for --agent command');
+    const sandbox = commandSandbox(configured.cwd);
+    return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, ...(args ? { args } : {}), outputFormat: 'text', promptPlacement: 'argument', ...(configured.cwd ? { cwd: resolveConfiguredPath(configured.cwd) } : {}), ...(configured.env ? { env: configured.env } : {}), ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }), ...(sandbox ? { sandbox } : {}) });
   }
-  const sandbox = commandSandbox();
+  const sandbox = commandSandbox(configured.cwd);
+  const model = flag('--model') ?? configured.model ?? agentCorpsConfig().defaults?.model;
   return agentTools().create(selected, {
-    ...(command ? { command } : {}), ...(args.length ? { args } : {}),
-    ...(flag('--model') ? { model: flag('--model')! } : {}),
-    ...((flag('--role') || flag('--role-file')) ? { role: null } : {}),
+    ...(command ? { command } : {}), ...(args ? { args } : {}),
+    ...(configured.cwd ? { cwd: resolveConfiguredPath(configured.cwd) } : {}),
+    ...(configured.env ? { env: configured.env } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(roleConfigured ? { role: null } : {}),
+    ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }),
     ...(sandbox ? { sandbox } : {}),
   });
 }
 
-function commandSandbox(): CommandAgentOptions['sandbox'] {
+function commandSandbox(cwd?: string): CommandAgentOptions['sandbox'] {
   const backend = flag('--sandbox-backend');
   if (!backend) return undefined;
   if (backend !== 'macos' && backend !== 'container') throw new Error('--sandbox-backend must be macos or container');
   if (backend === 'container' && !flag('--container-image')) throw new Error('--container-image is required for container sandboxing');
   return {
-    backend, workspaceRoot: process.cwd(), network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
+    backend, workspaceRoot: resolveConfiguredPath(cwd ?? process.cwd()), network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
     ...(flag('--container-image') ? { containerImage: flag('--container-image')! } : {}),
     maxMemoryMb: Number(flag('--sandbox-memory-mb') ?? '1024'), maxCpu: Number(flag('--sandbox-cpu') ?? '2'), maxPids: Number(flag('--sandbox-pids') ?? '128'),
   };
 }
 
 function agentProbeOptions(): AgentProbeOptions {
-  const selected = flag('--agent') ?? 'command';
-  const command = flag('--command') ?? flag('--agent-command');
+  const selected = selectedAgentId() === 'mock' ? 'command' : selectedAgentId();
+  const configured = runtimeConfig(selected);
+  const command = flag('--command') ?? flag('--agent-command') ?? configured.command;
   if (selected === 'command' && command) return { id: 'configured-command', displayName: 'Configured command agent', command };
-  if (selected === 'command') throw new Error('--command or --agent-command is required for command probing');
+  if (selected === 'command') throw new Error('--command, --agent-command, or tools.command is required for command probing');
   const definition = agentTools().get(selected);
   return { id: definition.id, displayName: definition.displayName, command: command ?? definition.command, ...(definition.versionArgs ? { versionArgs: definition.versionArgs } : {}) };
 }
 
 function dataDirectory(): string {
-  return flag('--data-dir') ?? join(homedir(), '.agentcorps');
+  return resolveConfiguredPath(flag('--data-dir') ?? agentCorpsConfig().paths?.dataDir ?? join(homedir(), '.agentcorps'));
 }
 
 function deviceDatabasePath(dataDir = dataDirectory()): string {
@@ -232,7 +267,8 @@ async function main(): Promise<void> {
   }
 
   if (command === 'roles') {
-    console.log(JSON.stringify(ROLE_PRESETS, null, 2));
+    const customRoles = Object.entries(agentCorpsConfig().roles ?? {}).map(([id, role]) => ({ id, ...role }));
+    console.log(JSON.stringify([...ROLE_PRESETS, ...customRoles], null, 2));
     return;
   }
 
