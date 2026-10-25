@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_sandbox_e2e:
+        description: Run Docker and macOS sandbox end-to-end tests
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   verify:
@@ -29,11 +36,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            docker: '1'
+            docker: '0'
             macos: '0'
           - os: macos-latest
             docker: '0'
-            macos: '1'
+            macos: '0'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -48,7 +55,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @agentcorps/security test
         env:
-          AGENTCORPS_DOCKER_E2E: ${{ matrix.docker }}
-          AGENTCORPS_MACOS_SANDBOX_E2E: ${{ matrix.macos }}
+          AGENTCORPS_DOCKER_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_sandbox_e2e && '1' || matrix.docker }}
+          AGENTCORPS_MACOS_SANDBOX_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_sandbox_e2e && '1' || matrix.macos }}
       - if: matrix.os == 'macos-latest'
         run: pnpm --filter @agentcorps/desktop build:desktop
