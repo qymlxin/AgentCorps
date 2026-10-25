@@ -65,6 +65,16 @@ agentcorps task run TASK_ID --agent gemini --role security --instructions "重�
 
 本机 Gemini CLI `0.23.0` 已实际验证版本及帮助参数，接受上述输出格式、prompt 和 model 参数；该版本提示 `--prompt` 未来可能移除，升级时须复验。尚未执行带账号的模型调用。鉴权使用 Gemini 自身配置，不自动添加 `--yolo`。
 
+## Aider
+
+```bash
+agentcorps task run TASK_ID --agent aider --model PROVIDER/MODEL --role developer
+```
+
+根据 [官方脚本模式](https://aider.chat/docs/scripting.html)，使用 `aider --no-auto-commits --no-dirty-commits --no-stream --no-pretty --no-gitignore --message PROMPT`，支持 `--model`。关闭 Aider 自主提交和修改 `.gitignore`，避免干扰项目的小步提交策略。不会自动添加全部确认参数；需要人工确认的操作可能被拒绝，或需要通过原生配置显式授权。
+
+Aider 没有在此接口提供统一结构化结果，保留纯文本输出并依据进程退出状态判断执行失败；文本里的“失败”描述不能可靠自动分类。仍应独立检查补丁和测试结果。鉴权、可编辑文件范围、历史文件均由 Aider 原生配置控制。
+
 ## 验证边界
 
 每个内置工具都有独立测试，使用真实本地子进程核对默认参数、模型参数、角色与记忆提示词、输出协议和错误传播。测试不需要厂商账号，不能代替已安装厂商 CLI 的鉴权、额度、网络和真实模型调用验收。`task probe` 仅运行版本命令，也不证明模型调用成功。兼容性以链接中的官方接口为准，升级 CLI 后应重新执行最小任务。

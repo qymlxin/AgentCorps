@@ -4,6 +4,7 @@ import { registerZCode } from './providers/zcode.js';
 import { registerDeepSeekHarness } from './providers/deepseek-harness.js';
 import { registerOpenCode } from './providers/opencode.js';
 import { registerGemini } from './providers/gemini.js';
+import { registerAider } from './providers/aider.js';
 import type { AgentOutputDecoder } from './output.js';
 import { CommandAgentAdapter, type CommandAgentOptions } from './index.js';
 import { getRolePreset, withRole } from './roles.js';
@@ -117,5 +118,6 @@ export function createAgentToolRegistry(): AgentToolRegistry {
   registerDeepSeekHarness(registry);
   registerOpenCode(registry);
   registerGemini(registry);
+  registerAider(registry);
   return registry;
 }
