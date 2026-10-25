@@ -45,6 +45,16 @@ agentcorps task run TASK_ID --agent deepseek-harness --role developer --instruct
 
 首次运行可能自动初始化 headless profile；模型、凭据和插件通过 Harness 自身 profile 配置管理，此适配器不声明未验证的 `--model` 参数。项目仍处于 developer preview，升级后需复验命令接口。执行前阅读其 [安全说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md)，角色提示词不能代替插件权限和进程隔离。
 
+## OpenCode
+
+```bash
+agentcorps task run TASK_ID --agent opencode --model PROVIDER/MODEL --role reviewer
+```
+
+默认调用 `opencode run --format json PROMPT`，模型使用其原生 `provider/model` 标识。提取 `text.part.text`，跳过工具、步骤元数据与 reasoning；将嵌套 `error.data.message` 传播为任务失败。输出协议对照 [OpenCode 1.x v1.2.27 源码](https://github.com/anomalyco/opencode/blob/v1.2.27/packages/opencode/src/cli/cmd/run.ts)，命令参数见 [官方文档](https://opencode.ai/docs/cli/)。2.x 或其他破坏性协议变更需另行复验，不能仅凭版本探测宣称兼容。
+
+使用 OpenCode 原生 provider 鉴权，不自动开启权限全批准、共享会话或续接旧会话。可移植角色通过任务提示词传递，与 OpenCode 原生 `--agent` 配置相互独立。
+
 ## 验证边界
 
 每个内置工具都有独立测试，使用真实本地子进程核对默认参数、模型参数、角色与记忆提示词、输出协议和错误传播。测试不需要厂商账号，不能代替已安装厂商 CLI 的鉴权、额度、网络和真实模型调用验收。`task probe` 仅运行版本命令，也不证明模型调用成功。兼容性以链接中的官方接口为准，升级 CLI 后应重新执行最小任务。
