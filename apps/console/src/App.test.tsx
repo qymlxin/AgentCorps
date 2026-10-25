@@ -42,6 +42,36 @@ describe('React management console', () => {
     expect(screen.getByText('run.output')).toBeTruthy();
   });
 
+  it('opens the task dialog, command palette, and views from keyboard shortcuts', async () => {
+    gateway();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(task.title);
+    await user.keyboard('n');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await user.keyboard('?');
+    expect(screen.getByRole('heading', { name: 'Shortcuts' })).toBeTruthy();
+    await user.keyboard('{Escape}');
+    await user.keyboard('{Control>}k{/Control}');
+    expect(screen.getByRole('heading', { name: 'Jump to action' })).toBeTruthy();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Sessions/ }));
+    expect(screen.getByRole('button', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
+    await user.keyboard('3');
+    expect(screen.getByRole('button', { name: 'Event stream' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('does not trigger letter shortcuts while editing form fields', async () => {
+    gateway();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(task.title);
+    await user.click(screen.getByRole('button', { name: 'New task' }));
+    await user.type(screen.getByLabelText('Title', { exact: true }), 'n');
+    expect(screen.queryByRole('heading', { name: 'Shortcuts' })).toBeNull();
+    expect(screen.getByDisplayValue('n')).toBeTruthy();
+  });
   it.each(['Cancel', 'Close'])('%s on task dialog never submits a task', async (name) => {
     const fetcher = gateway();
     const user = userEvent.setup();

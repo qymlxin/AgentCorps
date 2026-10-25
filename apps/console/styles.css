@@ -61,3 +61,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--acid); outline-
   .dialog-content { padding: 22px; }
   .task-dialog input, .task-dialog textarea, .task-dialog select { min-width: 0; width: 100%; }
 }
+.shortcut-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: start center; padding: 13vh 20px 30px; background: rgba(6,8,13,.82); backdrop-filter: blur(8px); animation: shortcut-in .16s ease-out; }
+.shortcut-dialog { width: min(520px, 100%); border: 1px solid var(--line); background: #181d24; color: var(--ink); padding: 28px; box-shadow: 0 25px 100px #000b; }
+.shortcut-dialog .dialog-head { margin-bottom: 22px; }
+.shortcut-list { border-top: 1px solid var(--line); }
+.shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+kbd { border: 1px solid #4b535f; background: #101318; color: var(--acid); padding: 5px 8px; font-size: 10px; white-space: nowrap; }
+.palette-actions { display: grid; gap: 7px; }
+.palette-action { display: flex; align-items: center; justify-content: space-between; gap: 20px; width: 100%; text-align: left; border: 1px solid transparent; background: #101318; color: var(--ink); padding: 13px 14px; }
+.palette-action:hover, .palette-action:focus-visible { border-color: var(--acid); background: #1d2229; outline: none; }
+.palette-action span { display: grid; gap: 5px; }.palette-action strong { font-size: 11px; }.palette-action small { color: var(--muted); font-size: 9px; line-height: 1.5; }
+@keyframes shortcut-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .shortcut-backdrop { animation: none; } }

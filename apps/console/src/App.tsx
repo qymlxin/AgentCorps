@@ -1,6 +1,8 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadConnection, saveConnection, type ApprovalAction, type Connection, type TaskAction } from './api.js';
 import { errorMessage, useDashboard } from './useDashboard.js';
+import { ShortcutOverlay } from './components/Shortcuts.js';
+import { shortcutAction, type ShortcutAction } from './shortcuts.js';
 import { SettingsDialog, TaskDialog } from './components/Dialogs.js';
 import { ApprovalsPanel, EventsPanel, TasksPanel } from './components/Panels.js';
 import { SessionsPanel } from './components/SessionsPanel.js';
@@ -17,6 +19,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
   const data = useDashboard(connection);
   const [view, setView] = useState<View>('overview');
   const [dialog, setDialog] = useState<'task' | 'settings' | null>(null);
+  const [shortcutOverlay, setShortcutOverlay] = useState<'palette' | 'help' | null>(null);
   const [actionError, setActionError] = useState('');
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const locks = useRef(new Set<string>());
@@ -29,6 +32,28 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
   }, [data.refresh]);
   const taskAction = useCallback((id: string, action: TaskAction) => { void perform(id, () => data.client.taskAction(id, action)); }, [perform, data.client]);
   const decide = useCallback((id: string, action: ApprovalAction) => { void perform(id, () => data.client.decide(id, action)); }, [perform, data.client]);
+  const runShortcut = useCallback((action: ShortcutAction) => {
+    switch (action) {
+      case 'new-task': setShortcutOverlay(null); setDialog('task'); break;
+      case 'overview': setShortcutOverlay(null); setView('overview'); break;
+      case 'sessions': setShortcutOverlay(null); setView('sessions'); break;
+      case 'events': setShortcutOverlay(null); setView('events'); break;
+      case 'refresh': setShortcutOverlay(null); void data.refresh(); break;
+      case 'palette': setShortcutOverlay((current) => current === 'palette' ? null : 'palette'); break;
+      case 'help': setShortcutOverlay('help'); break;
+      case 'close': setShortcutOverlay(null); setDialog(null); break;
+    }
+  }, [data.refresh]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const action = shortcutAction(event);
+      if (!action) return;
+      if (action !== 'close') event.preventDefault();
+      runShortcut(action);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [runShortcut]);
   const activeTasks = data.tasks.filter((task) => ['queued', 'running', 'waiting_approval'].includes(task.status)).length;
   const live = data.live === 'live' || data.live === 'polling';
   const healthLabel = data.error ? 'runtime offline' : data.loading ? 'connecting' : data.live === 'live' ? 'runtime online · live' : data.live === 'polling' ? 'runtime online · SSE' : 'runtime online · polling';
@@ -62,6 +87,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
         {view === 'sessions' && <SessionsPanel sessions={data.sessions} client={data.client} visible />}
       </section>
     </main>
+    {shortcutOverlay && <ShortcutOverlay mode={shortcutOverlay} onAction={runShortcut} onClose={() => setShortcutOverlay(null)} />}
     {dialog === 'settings' && <SettingsDialog connection={connection} onSave={(value) => { onConnection(value); setDialog(null); }} onClose={() => setDialog(null)} />}
     {dialog === 'task' && <TaskDialog sessions={data.sessions} client={data.client} onClose={() => setDialog(null)} onCreated={() => { setDialog(null); void data.refresh(); }} />}
   </>;
