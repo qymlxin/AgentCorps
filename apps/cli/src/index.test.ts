@@ -8,6 +8,35 @@ import { describe, expect, it } from 'vitest';
 const execFileAsync = promisify(execFile);
 
 describe('CLI', () => {
+  it('lists all registered tools and generates help from the registry', async () => {
+    const tools = JSON.parse((await execFileAsync('node', ['dist/index.js', 'agents'])).stdout) as Array<{ id: string }>;
+    expect(tools.map((tool) => tool.id)).toEqual(['codex', 'claude-code', 'cursor', 'kimi', 'qwen', 'zcode', 'deepseek-harness', 'opencode', 'gemini', 'aider']);
+    await expect(execFileAsync('node', ['dist/index.js', 'help'])).rejects.toMatchObject({ stderr: expect.stringContaining('deepseek-harness, opencode, gemini, aider') });
+  });
+
+  it.each([
+    ['kimi', { role: 'assistant', content: 'Fixture completed' }],
+    ['qwen', { type: 'assistant', message: { content: [{ type: 'text', text: 'Fixture completed' }] } }],
+    ['zcode', { type: 'result', response: 'Fixture completed', projection: { status: 'idle' } }],
+    ['deepseek-harness', 'Fixture completed'],
+    ['opencode', { type: 'text', part: { type: 'text', text: 'Fixture completed' } }],
+    ['gemini', { type: 'message', role: 'assistant', content: 'Fixture completed' }],
+    ['aider', 'Fixture completed'],
+  ] as const)('runs registered %s through the persistent task CLI with role guidance', async (id, frame) => {
+    const directory = mkdtempSync(join(tmpdir(), `agentcorps-cli-${id}-`));
+    try {
+      const fixture = join(directory, 'tool.cjs');
+      const output = typeof frame === 'string' ? frame : JSON.stringify(frame);
+      writeFileSync(fixture, `const prompt=process.argv.at(-1); if(!prompt.includes('code reviewer') || !prompt.includes('Reply in Chinese') || !prompt.includes('Inspect release')) process.exit(7); console.log(${JSON.stringify(output)});`);
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Provider', '--objective', 'Inspect release', '--data-dir', directory])).stdout) as { id: string };
+      const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--data-dir', directory, '--agent', id, '--agent-command', process.execPath, '--agent-arg', fixture, '--role', 'reviewer', '--instructions', 'Reply in Chinese'])).stdout) as { status: string };
+      expect(result.status).toBe('succeeded');
+      const detail = (await execFileAsync('node', ['dist/index.js', 'task', 'show', created.id, '--data-dir', directory])).stdout;
+      expect(detail).toContain('Fixture completed');
+      expect(JSON.parse(detail).task.objective).toBe('Inspect release');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('lists role presets and injects custom role prompts into command runs', async () => {
     const roles = JSON.parse((await execFileAsync('node', ['dist/index.js', 'roles'])).stdout) as Array<{ id: string }>;
     expect(roles.map((role) => role.id)).toContain('reviewer');

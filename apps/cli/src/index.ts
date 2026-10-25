@@ -25,13 +25,14 @@ Commands:
   task show TASK_ID [--data-dir PATH]       Show a task and its events
   agents                                    List configured external agent tools
   roles                                     List reusable role prompt presets
-  task run TASK_ID [--agent mock|codex|claude-code|cursor|command] [--data-dir PATH]
+  task run TASK_ID [--agent mock|TOOL|command] [--data-dir PATH]
+       [--agents-config PATH] [--model MODEL]
        [--role developer|reviewer|planner|tester|security|writer] [--role-file PATH] [--instructions TEXT]
        [--agent-command PATH] [--agent-arg ARG] [--sandbox-backend macos|container]
        [--container-image IMAGE] [--sandbox-network full] [--sandbox-memory-mb N] [--sandbox-cpu N] [--sandbox-pids N]
   task cancel TASK_ID [--data-dir PATH]    Cancel a task
   task retry TASK_ID [--data-dir PATH]     Requeue a failed or cancelled task
-  task probe [--agent codex|claude-code|cursor] [--command PATH]    Probe an Agent executable
+  task probe [--agent TOOL] [--command PATH] [--agents-config PATH]    Probe an Agent executable
   memory save --scope S --content C       Save global/workspace/session memory
        [--workspace-id ID] [--session-id ID] [--sensitivity public|private|secret]
   memory search --query Q                 Search visible memory
@@ -49,7 +50,11 @@ Commands:
   identity bind --channel KIND --external-user-id ID --device-id DEVICE [--role user|operator|admin]
   identity list [--include-revoked]         List channel-to-device identity bindings
   identity revoke --channel KIND --external-user-id ID
-  serve --identity-required                 Require external channel identity bindings`);
+  serve --identity-required                 Require external channel identity bindings
+
+Built-in tools (TOOL): ${createAgentToolRegistry().list().map((tool) => tool.id).join(', ')}
+Use agents to inspect definitions; serve accepts the same tool and role options as task run.
+Role presets are prompt guidance, not permission or sandbox enforcement.`);
   process.exit(1);
 }
 
