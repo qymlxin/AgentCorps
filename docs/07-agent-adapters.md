@@ -14,6 +14,20 @@ agentcorps task run TASK_ID --agent command --agent-command ./my-agent --role-fi
 
 `--role-file` 是显式指定的 UTF-8 提示词文件（最多 64 KiB），与 `--role` 互斥；不会自动执行文件内容或发现仓库中的配置。相同参数也可用于 `serve`，作为该网关启动的任务的默认角色。角色提示只影响本次执行，不修改已存储的任务目标，不授予工具权限，也不能替代只读沙箱、策略或审批。厂商 CLI 自己的系统提示仍然存在，此机制不声称可覆盖它。
 
+## 可扩展的工具注册
+
+`AgentToolRegistry` 统一管理默认命令、参数、输出格式、提示词位置、模型选项、版本探测和默认角色。CLI 的执行、探测和工具列表共享注册表，新增工具不再需要修改 CLI 的条件分支。
+
+```bash
+agentcorps agents
+agentcorps task run TASK_ID --agent codex --model YOUR_MODEL --role developer
+agentcorps agents --agents-config /absolute/path/tools.json
+```
+
+自定义配置仅在显式传入 `--agents-config` 后加载（最多 1 MiB）；格式为 `{"version":1,"tools":[...]}`。工具项包含 `id`、`displayName`、`command`、字符串数组 `args`、`outputFormat`（`text`/`jsonl`），可选 `promptPlacement`（`argument`/`stdin`）、`promptFlag`、`modelFlag`、`versionArgs`、`documentationUrl` 和 `defaultRole`。`promptFlag` 会紧挨提示词插入；`modelFlag` 在选择 `--model` 时使用。配置定义可执行程序，属于可信的本地管理员配置，不能接受模型输出或远端请求上传的定义。不会自动安装工具、修改厂商全局配置、执行 shell 字符串，重复 ID 和未知字段会被拒绝。
+
+`--agent-command` 覆盖可执行文件，重复的 `--agent-arg` 完整替换默认参数（此时调用方负责把消费提示词的选项放在参数末尾）。角色提示仍生效。沙箱参数适用于注册表中的工具和自定义命令；模型与凭据仍需在各工具的官方配置中设置。
+
 ## JSONL/stdio 适配器
 
 `packages/adapters` 提供 `JsonlAgentAdapter`。它将一个本地子进程视为 Agent，并使用一行一个 JSON frame 的最小协议：

@@ -1,3 +1,4 @@
+export { AgentToolRegistry, createAgentToolRegistry, loadAgentToolDefinitions, type AgentToolDefinition, type CreateToolOptions } from './registry.js';
 export { ROLE_PRESETS, getRolePreset, composeRolePrompt, withRole, type RolePreset, type RolePromptOptions } from './roles.js';
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -385,6 +386,7 @@ export interface CommandAgentOptions {
   readonly maxLineBytes?: number;
   readonly sessionIdEnv?: string;
   readonly promptPlacement?: 'argument' | 'stdin';
+  readonly promptFlag?: string;
   readonly outputFormat?: 'text' | 'jsonl';
   readonly sandbox?: Omit<SandboxedCommandOptions, 'executable' | 'args' | 'cwd' | 'env' | 'signal'>;
 }
@@ -432,7 +434,7 @@ export class CommandAgentAdapter implements AgentAdapter {
   async execute(request: AgentRequest): Promise<void> {
     const options = this.options;
     const prompt = buildAgentPrompt(request);
-    const args = [...(options.args ?? []), ...(options.promptPlacement === 'stdin' ? [] : [prompt])];
+    const args = [...(options.args ?? []), ...(options.promptPlacement === 'stdin' ? [] : [...(options.promptFlag ? [options.promptFlag] : []), prompt])];
     const environment: Record<string, string> = Object.fromEntries(Object.entries({ ...process.env, ...options.env, [options.sessionIdEnv ?? 'AGENTCORPS_SESSION_ID']: request.task.sessionId }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
     if (options.sandbox) {
       const result = await new SandboxedCommandRunner().run({ ...options.sandbox, executable: options.command, args, ...(options.cwd ? { cwd: options.cwd } : {}), env: environment, signal: request.signal });

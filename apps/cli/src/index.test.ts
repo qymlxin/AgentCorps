@@ -24,6 +24,21 @@ describe('CLI', () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
+  it('loads a custom tool manifest and passes model, prompt flag and role to a real process', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-registry-'));
+    try {
+      const fixture = join(directory, 'tool.cjs');
+      const config = join(directory, 'tools.json');
+      writeFileSync(fixture, "const args=process.argv.slice(2); const prompt=args[args.indexOf('--prompt')+1]; console.log(prompt); process.exit(args[0]==='--model' && args[1]==='fixture-model' && prompt.includes('code reviewer') ? 0 : 1)");
+      writeFileSync(config, JSON.stringify({ version: 1, tools: [{ id: 'fixture-tool', displayName: 'Fixture tool', command: process.execPath, args: [fixture], outputFormat: 'text', promptFlag: '--prompt', modelFlag: '--model' }] }));
+      const tools = JSON.parse((await execFileAsync('node', ['dist/index.js', 'agents', '--agents-config', config])).stdout) as Array<{ id: string }>;
+      expect(tools.map((tool) => tool.id)).toContain('fixture-tool');
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Registry', '--objective', 'verify registration', '--data-dir', directory])).stdout) as { id: string };
+      const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--data-dir', directory, '--agent', 'fixture-tool', '--agents-config', config, '--model', 'fixture-model', '--role', 'reviewer'])).stdout) as { status: string };
+      expect(result.status).toBe('succeeded');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('has a runnable demo command after build', async () => {
     const { stdout } = await execFileAsync('node', ['dist/index.js', 'demo']);
     expect(stdout).toContain('task.created');

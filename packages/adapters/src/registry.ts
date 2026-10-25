@@ -1,0 +1,97 @@
+import { CommandAgentAdapter, type CommandAgentOptions } from './index.js';
+import { getRolePreset, withRole } from './roles.js';
+import type { AgentAdapter } from '@agentcorps/runtime';
+
+export interface AgentToolDefinition {
+  readonly id: string;
+  readonly displayName: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly outputFormat: 'text' | 'jsonl';
+  readonly promptPlacement?: 'argument' | 'stdin';
+  readonly promptFlag?: string;
+  readonly modelFlag?: string;
+  readonly versionArgs?: readonly string[];
+  readonly documentationUrl?: string;
+  readonly defaultRole?: string;
+}
+
+export interface CreateToolOptions {
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly model?: string;
+  readonly role?: string | null;
+  readonly instructions?: string;
+  readonly timeoutMs?: number;
+  readonly sandbox?: CommandAgentOptions['sandbox'];
+}
+
+/** Definitions are data, never shell strings or dynamically imported code. */
+export class AgentToolRegistry {
+  private readonly definitions = new Map<string, AgentToolDefinition>();
+
+  register(definition: AgentToolDefinition): this {
+    validateDefinition(definition);
+    if (this.definitions.has(definition.id)) throw new Error(`Duplicate agent tool: ${definition.id}`);
+    this.definitions.set(definition.id, Object.freeze({ ...definition, args: Object.freeze([...definition.args]), ...(definition.versionArgs ? { versionArgs: Object.freeze([...definition.versionArgs]) } : {}) }));
+    return this;
+  }
+
+  list(): readonly AgentToolDefinition[] { return [...this.definitions.values()]; }
+
+  get(id: string): AgentToolDefinition {
+    const definition = this.definitions.get(id);
+    if (!definition) throw new Error(`Unknown agent: ${id}. Available tools: ${this.list().map((entry) => entry.id).join(', ')}`);
+    return definition;
+  }
+
+  create(id: string, options: CreateToolOptions = {}): AgentAdapter {
+    const definition = this.get(id);
+    if (options.model && !definition.modelFlag) throw new Error(`Tool ${id} does not declare a model selection flag`);
+    const args = [...(options.args ?? definition.args), ...(options.model ? [definition.modelFlag!, options.model] : [])];
+    const adapter = new CommandAgentAdapter({
+      id: definition.id, displayName: definition.displayName, command: options.command ?? definition.command,
+      args, outputFormat: definition.outputFormat,
+      ...(definition.promptPlacement ? { promptPlacement: definition.promptPlacement } : {}),
+      ...(definition.promptFlag && !options.args ? { promptFlag: definition.promptFlag } : {}),
+      ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.env ? { env: options.env } : {}),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.sandbox ? { sandbox: options.sandbox } : {}),
+    });
+    const role = options.role === null ? undefined : options.role ?? definition.defaultRole;
+    return withRole(adapter, { ...(role ? { role: getRolePreset(role) } : {}), ...(options.instructions ? { instructions: options.instructions } : {}) });
+  }
+}
+
+function validateDefinition(value: AgentToolDefinition): void {
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(value.id)) throw new Error('Agent tool id must be a lowercase slug');
+  if (!value.displayName?.trim() || !value.command?.trim()) throw new Error('Agent tool requires displayName and command');
+  if (value.command.includes('\0')) throw new Error('Invalid agent executable');
+  if (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === 'string' && !entry.includes('\0'))) throw new Error('Agent args must be an array of strings');
+  if (!['text', 'jsonl'].includes(value.outputFormat)) throw new Error('Agent outputFormat must be text or jsonl');
+  if (value.promptPlacement && !['argument', 'stdin'].includes(value.promptPlacement)) throw new Error('Invalid prompt placement');
+  if (value.promptPlacement === 'stdin' && value.promptFlag) throw new Error('stdin tools cannot declare a prompt flag');
+  for (const flag of [value.promptFlag, value.modelFlag]) if (flag !== undefined && !/^--?[a-zA-Z][a-zA-Z0-9-]*$/.test(flag)) throw new Error('Invalid agent option flag');
+  if (value.versionArgs && (!Array.isArray(value.versionArgs) || !value.versionArgs.every((entry) => typeof entry === 'string'))) throw new Error('versionArgs must be strings');
+  if (value.defaultRole) getRolePreset(value.defaultRole);
+}
+
+/** Only explicit, trusted configuration may register executable definitions. */
+export function loadAgentToolDefinitions(value: unknown, registry: AgentToolRegistry): void {
+  if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1 || !('tools' in value) || !Array.isArray(value.tools)) throw new Error('Agent config must contain version: 1 and tools: []');
+  for (const entry of value.tools) {
+    if (!entry || typeof entry !== 'object') throw new Error('Invalid agent tool definition');
+    const allowed = new Set(['id', 'displayName', 'command', 'args', 'outputFormat', 'promptPlacement', 'promptFlag', 'modelFlag', 'versionArgs', 'documentationUrl', 'defaultRole']);
+    if (Object.keys(entry).some((key) => !allowed.has(key))) throw new Error('Unknown field in agent tool definition');
+    registry.register(entry as AgentToolDefinition);
+  }
+}
+
+export function createAgentToolRegistry(): AgentToolRegistry {
+  return new AgentToolRegistry()
+    .register({ id: 'codex', displayName: 'OpenAI Codex CLI', command: 'codex', args: ['exec', '--json'], outputFormat: 'jsonl', modelFlag: '--model' })
+    .register({ id: 'claude-code', displayName: 'Anthropic Claude Code', command: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], outputFormat: 'jsonl', modelFlag: '--model' })
+    .register({ id: 'cursor', displayName: 'Cursor CLI', command: 'agent', args: ['-p', '--output-format', 'stream-json', '--stream-partial-output'], outputFormat: 'jsonl', modelFlag: '--model' });
+}

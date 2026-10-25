@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type RolePreset } from '@agentcorps/adapters';
+import { CommandAgentAdapter, createAgentToolRegistry, loadAgentToolDefinitions, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type CommandAgentOptions, type RolePreset } from '@agentcorps/adapters';
 import type { AgentAdapter } from '@agentcorps/runtime';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
@@ -23,6 +23,7 @@ Commands:
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
   task show TASK_ID [--data-dir PATH]       Show a task and its events
+  agents                                    List configured external agent tools
   roles                                     List reusable role prompt presets
   task run TASK_ID [--agent mock|codex|claude-code|cursor|command] [--data-dir PATH]
        [--role developer|reviewer|planner|tester|security|writer] [--role-file PATH] [--instructions TEXT]
@@ -77,6 +78,20 @@ function repeatedFlag(name: string): string[] {
   return values;
 }
 
+let configuredTools: ReturnType<typeof createAgentToolRegistry> | undefined;
+function agentTools() {
+  if (configuredTools) return configuredTools;
+  const registry = createAgentToolRegistry();
+  const config = flag('--agents-config');
+  if (config) {
+    const contents = readFileSync(config, 'utf8');
+    if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Agent configuration exceeds 1 MiB');
+    loadAgentToolDefinitions(JSON.parse(contents) as unknown, registry);
+  }
+  configuredTools = registry;
+  return registry;
+}
+
 function agentForRun(): AgentAdapter {
   const roleId = flag('--role');
   const roleFile = flag('--role-file');
@@ -96,36 +111,39 @@ function unconfiguredAgentForRun(): AgentAdapter {
   const command = flag('--agent-command');
   const args = repeatedFlag('--agent-arg');
   if (selected === 'mock') return new MockAgent();
-  if (selected === 'codex') return args.length ? createCodexAdapter(command ?? 'codex', args) : createCodexAdapter(command ?? 'codex');
-  if (selected === 'claude-code') return args.length ? createClaudeCodeAdapter(command ?? 'claude', args) : createClaudeCodeAdapter(command ?? 'claude');
-  if (selected === 'cursor') return args.length ? createCursorAdapter(command ?? 'agent', args) : createCursorAdapter(command ?? 'agent');
   if (selected === 'command') {
     if (!command) throw new Error('--agent-command is required for --agent command');
-    const sandboxBackend = flag('--sandbox-backend');
-    if (sandboxBackend && sandboxBackend !== 'macos' && sandboxBackend !== 'container') throw new Error('--sandbox-backend must be macos or container');
-    if (sandboxBackend === 'container' && !flag('--container-image')) throw new Error('--container-image is required for container sandboxing');
-    const sandbox = sandboxBackend ? {
-      backend: sandboxBackend as 'macos' | 'container',
-      workspaceRoot: process.cwd(),
-      network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
-      ...(flag('--container-image') ? { containerImage: flag('--container-image')! } : {}),
-      maxMemoryMb: Number(flag('--sandbox-memory-mb') ?? '1024'),
-      maxCpu: Number(flag('--sandbox-cpu') ?? '2'),
-      maxPids: Number(flag('--sandbox-pids') ?? '128'),
-    } : undefined;
+    const sandbox = commandSandbox();
     return new CommandAgentAdapter({ id: 'configured-command', displayName: 'Configured command agent', command, args, outputFormat: 'text', promptPlacement: 'argument', ...(sandbox ? { sandbox } : {}) });
   }
-  throw new Error(`Unknown agent: ${selected}`);
+  const sandbox = commandSandbox();
+  return agentTools().create(selected, {
+    ...(command ? { command } : {}), ...(args.length ? { args } : {}),
+    ...(flag('--model') ? { model: flag('--model')! } : {}),
+    ...((flag('--role') || flag('--role-file')) ? { role: null } : {}),
+    ...(sandbox ? { sandbox } : {}),
+  });
+}
+
+function commandSandbox(): CommandAgentOptions['sandbox'] {
+  const backend = flag('--sandbox-backend');
+  if (!backend) return undefined;
+  if (backend !== 'macos' && backend !== 'container') throw new Error('--sandbox-backend must be macos or container');
+  if (backend === 'container' && !flag('--container-image')) throw new Error('--container-image is required for container sandboxing');
+  return {
+    backend, workspaceRoot: process.cwd(), network: flag('--sandbox-network') === 'full' ? 'full' as const : 'none' as const,
+    ...(flag('--container-image') ? { containerImage: flag('--container-image')! } : {}),
+    maxMemoryMb: Number(flag('--sandbox-memory-mb') ?? '1024'), maxCpu: Number(flag('--sandbox-cpu') ?? '2'), maxPids: Number(flag('--sandbox-pids') ?? '128'),
+  };
 }
 
 function agentProbeOptions(): AgentProbeOptions {
   const selected = flag('--agent') ?? 'command';
   const command = flag('--command') ?? flag('--agent-command');
-  if (selected === 'codex') return { id: 'codex-cli', displayName: 'OpenAI Codex CLI', command: command ?? 'codex' };
-  if (selected === 'claude-code') return { id: 'claude-code', displayName: 'Anthropic Claude Code', command: command ?? 'claude' };
-  if (selected === 'cursor') return { id: 'cursor-cli', displayName: 'Cursor CLI', command: command ?? 'agent' };
   if (selected === 'command' && command) return { id: 'configured-command', displayName: 'Configured command agent', command };
-  throw new Error('--command or --agent-command is required for command probing');
+  if (selected === 'command') throw new Error('--command or --agent-command is required for command probing');
+  const definition = agentTools().get(selected);
+  return { id: definition.id, displayName: definition.displayName, command: command ?? definition.command, ...(definition.versionArgs ? { versionArgs: definition.versionArgs } : {}) };
 }
 
 function dataDirectory(): string {
@@ -197,6 +215,11 @@ function memoryService(): MemoryService {
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'help';
   if (command === 'help') usage();
+
+  if (command === 'agents') {
+    console.log(JSON.stringify(agentTools().list(), null, 2));
+    return;
+  }
 
   if (command === 'roles') {
     console.log(JSON.stringify(ROLE_PRESETS, null, 2));
