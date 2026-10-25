@@ -1,4 +1,5 @@
 import { registerKimi } from './providers/kimi.js';
+import { registerQwen } from './providers/qwen.js';
 import type { AgentOutputDecoder } from './output.js';
 import { CommandAgentAdapter, type CommandAgentOptions } from './index.js';
 import { getRolePreset, withRole } from './roles.js';
@@ -107,5 +108,6 @@ export function createAgentToolRegistry(): AgentToolRegistry {
     .register({ id: 'claude-code', displayName: 'Anthropic Claude Code', command: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], outputFormat: 'jsonl', modelFlag: '--model' })
     .register({ id: 'cursor', displayName: 'Cursor CLI', command: 'agent', args: ['-p', '--output-format', 'stream-json', '--stream-partial-output'], outputFormat: 'jsonl', modelFlag: '--model' });
   registerKimi(registry);
+  registerQwen(registry);
   return registry;
 }

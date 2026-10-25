@@ -13,6 +13,14 @@ agentcorps task run TASK_ID --agent kimi --role reviewer --instructions "用中�
 
 面向当前 [Kimi Code 官方 CLI 文档](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-command.html)。旧 Python `kimi-cli` 的 print 模式另需 `--print`；可用显式 `--agent-arg --print --agent-arg --output-format=stream-json --agent-arg -p` 覆盖参数。当前 Kimi 非交互 prompt 模式默认自动处理工具权限，这不是沙箱；只在受控工作区运行，必要时显式启用外部沙箱。
 
+## 千问 Qwen Code
+
+```bash
+agentcorps task run TASK_ID --agent qwen --model qwen3-coder-plus --role tester
+```
+
+默认调用 `qwen --output-format stream-json --prompt PROMPT`。依据 [官方 headless 协议](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/) 提取 assistant 文本，跳过初始化、工具和推理事件，避免重复显示相同的最终 result；结构化失败即使退出码为 0 也判失败。默认不请求 partial 消息，避免与完整消息重复。通过千问自身配置完成鉴权，不自动开启 `--yolo` 或改写系统提示词。
+
 ## 验证边界
 
 每个内置工具都有独立测试，使用真实本地子进程核对默认参数、模型参数、角色与记忆提示词、输出协议和错误传播。测试不需要厂商账号，不能代替已安装厂商 CLI 的鉴权、额度、网络和真实模型调用验收。`task probe` 仅运行版本命令，也不证明模型调用成功。兼容性以链接中的官方接口为准，升级 CLI 后应重新执行最小任务。
