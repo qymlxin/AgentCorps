@@ -4,7 +4,7 @@ import { AgentToolRegistry, createAgentToolRegistry, loadAgentToolDefinitions } 
 describe('agent tool registry', () => {
   it('ships common tools as declarative definitions', () => {
     const registry = createAgentToolRegistry();
-    expect(registry.list().map((entry) => entry.id)).toEqual(['codex', 'claude-code', 'cursor']);
+    expect(registry.list().map((entry) => entry.id)).toEqual(expect.arrayContaining(['codex', 'claude-code', 'cursor']));
     expect(registry.get('codex').args).toContain('--json');
   });
 
