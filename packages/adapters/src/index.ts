@@ -1,3 +1,5 @@
+export { ROLE_PRESETS, getRolePreset, composeRolePrompt, withRole, type RolePreset, type RolePromptOptions } from './roles.js';
+
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { AgentDescriptor } from '@agentcorps/domain';

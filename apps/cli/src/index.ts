@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, probeAgent, type AgentProbeOptions } from '@agentcorps/adapters';
+import { CommandAgentAdapter, createClaudeCodeAdapter, createCodexAdapter, createCursorAdapter, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type RolePreset } from '@agentcorps/adapters';
 import type { AgentAdapter } from '@agentcorps/runtime';
 import type { Mode, TaskId } from '@agentcorps/domain';
 import { listenGateway } from '@agentcorps/gateway';
@@ -23,7 +23,9 @@ Commands:
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
   task show TASK_ID [--data-dir PATH]       Show a task and its events
+  roles                                     List reusable role prompt presets
   task run TASK_ID [--agent mock|codex|claude-code|cursor|command] [--data-dir PATH]
+       [--role developer|reviewer|planner|tester|security|writer] [--role-file PATH] [--instructions TEXT]
        [--agent-command PATH] [--agent-arg ARG] [--sandbox-backend macos|container]
        [--container-image IMAGE] [--sandbox-network full] [--sandbox-memory-mb N] [--sandbox-cpu N] [--sandbox-pids N]
   task cancel TASK_ID [--data-dir PATH]    Cancel a task
@@ -76,6 +78,20 @@ function repeatedFlag(name: string): string[] {
 }
 
 function agentForRun(): AgentAdapter {
+  const roleId = flag('--role');
+  const roleFile = flag('--role-file');
+  if (roleId && roleFile) throw new Error('--role and --role-file are mutually exclusive');
+  let role: RolePreset | undefined = roleId ? getRolePreset(roleId) : undefined;
+  if (roleFile) {
+    const prompt = readFileSync(roleFile, 'utf8').trim();
+    if (!prompt || Buffer.byteLength(prompt) > 64 * 1024) throw new Error('--role-file must contain between 1 and 65536 bytes of prompt text');
+    role = { id: 'custom', displayName: 'Custom role', description: 'Explicitly configured prompt file', prompt };
+  }
+  const instructions = flag('--instructions');
+  return withRole(unconfiguredAgentForRun(), { ...(role ? { role } : {}), ...(instructions ? { instructions } : {}) });
+}
+
+function unconfiguredAgentForRun(): AgentAdapter {
   const selected = flag('--agent') ?? 'mock';
   const command = flag('--agent-command');
   const args = repeatedFlag('--agent-arg');
@@ -181,6 +197,11 @@ function memoryService(): MemoryService {
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'help';
   if (command === 'help') usage();
+
+  if (command === 'roles') {
+    console.log(JSON.stringify(ROLE_PRESETS, null, 2));
+    return;
+  }
 
   if (command === 'demo') {
     const local = new TaskRuntime();

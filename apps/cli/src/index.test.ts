@@ -8,6 +8,22 @@ import { describe, expect, it } from 'vitest';
 const execFileAsync = promisify(execFile);
 
 describe('CLI', () => {
+  it('lists role presets and injects custom role prompts into command runs', async () => {
+    const roles = JSON.parse((await execFileAsync('node', ['dist/index.js', 'roles'])).stdout) as Array<{ id: string }>;
+    expect(roles.map((role) => role.id)).toContain('reviewer');
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-role-'));
+    try {
+      const roleFile = join(directory, 'role.md');
+      writeFileSync(roleFile, 'You are a release specialist.');
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Role', '--objective', 'inspect release', '--data-dir', directory])).stdout) as { id: string };
+      const script = "const prompt=process.argv[1]; process.exit(prompt.includes('release specialist') && prompt.includes('Reply in Chinese') && prompt.includes('inspect release') ? 0 : 1)";
+      const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--data-dir', directory, '--agent', 'command', '--agent-command', process.execPath, '--agent-arg', '-e', '--agent-arg', script, '--role-file', roleFile, '--instructions', 'Reply in Chinese'])).stdout) as { status: string };
+      expect(result.status).toBe('succeeded');
+      const detail = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'show', created.id, '--data-dir', directory])).stdout) as { task: { objective: string } };
+      expect(detail.task.objective).toBe('inspect release');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('has a runnable demo command after build', async () => {
     const { stdout } = await execFileAsync('node', ['dist/index.js', 'demo']);
     expect(stdout).toContain('task.created');

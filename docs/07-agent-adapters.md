@@ -2,6 +2,18 @@
 
 > 版本：0.1.0
 
+## 可移植的角色预设
+
+所有适配器可通过 `withRole(adapter, { role, instructions })` 注入角色和附加提示词。内置角色为 `developer`、`reviewer`、`planner`、`tester`、`security`、`writer`。
+
+```bash
+agentcorps roles
+agentcorps task run TASK_ID --agent codex --role reviewer --instructions "用中文报告已确认的问题"
+agentcorps task run TASK_ID --agent command --agent-command ./my-agent --role-file ./roles/release.md
+```
+
+`--role-file` 是显式指定的 UTF-8 提示词文件（最多 64 KiB），与 `--role` 互斥；不会自动执行文件内容或发现仓库中的配置。相同参数也可用于 `serve`，作为该网关启动的任务的默认角色。角色提示只影响本次执行，不修改已存储的任务目标，不授予工具权限，也不能替代只读沙箱、策略或审批。厂商 CLI 自己的系统提示仍然存在，此机制不声称可覆盖它。
+
 ## JSONL/stdio 适配器
 
 `packages/adapters` 提供 `JsonlAgentAdapter`。它将一个本地子进程视为 Agent，并使用一行一个 JSON frame 的最小协议：
