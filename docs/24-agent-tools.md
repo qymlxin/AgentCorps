@@ -55,6 +55,16 @@ agentcorps task run TASK_ID --agent opencode --model PROVIDER/MODEL --role revie
 
 使用 OpenCode 原生 provider 鉴权，不自动开启权限全批准、共享会话或续接旧会话。可移植角色通过任务提示词传递，与 OpenCode 原生 `--agent` 配置相互独立。
 
+## Gemini CLI
+
+```bash
+agentcorps task run TASK_ID --agent gemini --role security --instructions "重点检查凭据泄露"
+```
+
+默认调用 `gemini --output-format stream-json --prompt PROMPT`，支持 `--model`。依据 [官方 headless 文档](https://geminicli.com/docs/cli/headless/) 和 [事件类型定义](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/output/types.ts) 转发 assistant message 文本，忽略用户输入回显、工具结果和统计；warning 保留为 stderr 诊断，error 或最终失败状态使任务失败。
+
+本机 Gemini CLI `0.23.0` 已实际验证版本及帮助参数，接受上述输出格式、prompt 和 model 参数；该版本提示 `--prompt` 未来可能移除，升级时须复验。尚未执行带账号的模型调用。鉴权使用 Gemini 自身配置，不自动添加 `--yolo`。
+
 ## 验证边界
 
 每个内置工具都有独立测试，使用真实本地子进程核对默认参数、模型参数、角色与记忆提示词、输出协议和错误传播。测试不需要厂商账号，不能代替已安装厂商 CLI 的鉴权、额度、网络和真实模型调用验收。`task probe` 仅运行版本命令，也不证明模型调用成功。兼容性以链接中的官方接口为准，升级 CLI 后应重新执行最小任务。
