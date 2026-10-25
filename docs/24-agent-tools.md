@@ -21,6 +21,19 @@ agentcorps task run TASK_ID --agent qwen --model qwen3-coder-plus --role tester
 
 默认调用 `qwen --output-format stream-json --prompt PROMPT`。依据 [官方 headless 协议](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/) 提取 assistant 文本，跳过初始化、工具和推理事件，避免重复显示相同的最终 result；结构化失败即使退出码为 0 也判失败。默认不请求 partial 消息，避免与完整消息重复。通过千问自身配置完成鉴权，不自动开启 `--yolo` 或改写系统提示词。
 
+## GLM / ZCode CLI
+
+```bash
+agentcorps task probe --agent zcode
+agentcorps task run TASK_ID --agent zcode --role planner
+```
+
+使用智谱开源的 [ZCode CLI](https://github.com/zai-org/ZCode/tree/main/apps/zcode-cli)，默认调用 `zcode --output-format stream-json --no-color --prompt PROMPT`。根据其真实协议读取终结 `result.response`，而不是其他工具的 `result` 字段；多回合工作流只显示最后结算后的回答，暂不转发中间文本事件。
+
+模型和 provider 由 ZCode 自身配置管理。官方 CLI 当前不支持 `--model`，因此 AgentCorps 会明确拒绝为此工具传入 `--model`，不会伪造参数。源码构建要求以官方文档为准；也可通过 `--agent-command /absolute/path/to/zcode` 使用独立二进制。
+
+**权限注意：** ZCode 的 `--prompt` 模式缺省为 `yolo`，角色 `planner` / `reviewer` 不会降低权限。需要原生 plan 模式时，完整覆盖参数，例如 `--agent-arg --mode --agent-arg plan --agent-arg --output-format --agent-arg stream-json --agent-arg --no-color --agent-arg --prompt`；或者使用受控外部沙箱。工具权限拒绝后仍可能正常结束，不等价于任务通过验收。
+
 ## 验证边界
 
 每个内置工具都有独立测试，使用真实本地子进程核对默认参数、模型参数、角色与记忆提示词、输出协议和错误传播。测试不需要厂商账号，不能代替已安装厂商 CLI 的鉴权、额度、网络和真实模型调用验收。`task probe` 仅运行版本命令，也不证明模型调用成功。兼容性以链接中的官方接口为准，升级 CLI 后应重新执行最小任务。
