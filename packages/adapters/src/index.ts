@@ -1,6 +1,9 @@
 export { AgentToolRegistry, createAgentToolRegistry, loadAgentToolDefinitions, type AgentToolDefinition, type CreateToolOptions } from './registry.js';
 export { ROLE_PRESETS, getRolePreset, composeRolePrompt, withRole, type RolePreset, type RolePromptOptions } from './roles.js';
 
+import type { AgentOutputDecoder } from './output.js';
+export type { AgentOutputDecoder, DecodedAgentOutput } from './output.js';
+
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { AgentDescriptor } from '@agentcorps/domain';
@@ -388,6 +391,8 @@ export interface CommandAgentOptions {
   readonly promptPlacement?: 'argument' | 'stdin';
   readonly promptFlag?: string;
   readonly outputFormat?: 'text' | 'jsonl';
+  readonly outputDecoder?: () => AgentOutputDecoder;
+  readonly maxOutputBytes?: number;
   readonly sandbox?: Omit<SandboxedCommandOptions, 'executable' | 'args' | 'cwd' | 'env' | 'signal'>;
 }
 
@@ -432,62 +437,88 @@ export class CommandAgentAdapter implements AgentAdapter {
   }
 
   async execute(request: AgentRequest): Promise<void> {
+    if (request.signal.aborted) throw abortError();
     const options = this.options;
     const prompt = buildAgentPrompt(request);
+    const decodeOutput = options.outputDecoder?.();
+    const emitLine = (line: string): void => {
+      if (options.outputFormat !== 'jsonl') { request.emit(line, 'assistant'); return; }
+      let value: unknown;
+      try { value = JSON.parse(line); } catch { request.emit(line, 'stdout'); return; }
+      if (!decodeOutput) { request.emit(textFromAgentEvent(value) ?? line, 'assistant'); return; }
+      const decoded = decodeOutput(value);
+      if (decoded.error) throw new Error(decoded.error);
+      if (decoded.text) request.emit(decoded.text, decoded.stream ?? 'assistant');
+    };
     const args = [...(options.args ?? []), ...(options.promptPlacement === 'stdin' ? [] : [...(options.promptFlag ? [options.promptFlag] : []), prompt])];
     const environment: Record<string, string> = Object.fromEntries(Object.entries({ ...process.env, ...options.env, [options.sessionIdEnv ?? 'AGENTCORPS_SESSION_ID']: request.task.sessionId }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
     if (options.sandbox) {
-      const result = await new SandboxedCommandRunner().run({ ...options.sandbox, executable: options.command, args, ...(options.cwd ? { cwd: options.cwd } : {}), env: environment, signal: request.signal });
+      if (options.promptPlacement === 'stdin') throw new Error('stdin prompts require a sandbox runner with stdin support; use argument placement');
+      const result = await new SandboxedCommandRunner().run({ ...options.sandbox, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), executable: options.command, args, ...(options.cwd ? { cwd: options.cwd } : {}), env: environment, signal: request.signal });
       if (result.stderr) request.emit(result.stderr, 'stderr');
       if (result.exitCode !== 0) throw new Error(`Agent exited before completion (code=${result.exitCode}, signal=${result.signal ?? 'none'})`);
       if (options.outputFormat !== 'jsonl') request.emit(result.stdout, 'assistant');
-      else for (const line of result.stdout.split('\\n').filter(Boolean)) {
-        try { request.emit(textFromAgentEvent(JSON.parse(line)) ?? line, 'assistant'); } catch { request.emit(line, 'stdout'); }
-      }
+      else for (const line of result.stdout.split('\n').filter(Boolean)) emitLine(line);
       return;
     }
     const child = spawn(options.command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env, [options.sessionIdEnv ?? 'AGENTCORPS_SESSION_ID']: request.task.sessionId },
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+      shell: false,
     });
     const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
     const maxLineBytes = options.maxLineBytes ?? 4 * 1024 * 1024;
+    const maxOutputBytes = options.maxOutputBytes ?? 16 * 1024 * 1024;
+    let outputBytes = 0;
+    let pendingLineBytes = 0;
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
+    let forceKill: NodeJS.Timeout | undefined;
+    const terminate = (signal: NodeJS.Signals): void => {
+      try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Already exited. */ }
+    };
     const promise = new Promise<void>((resolve, reject) => {
       const finish = (error?: Error): void => {
         if (settled) return;
         settled = true;
         if (timeout) clearTimeout(timeout);
-        if (error) reject(error);
-        else resolve();
+        request.signal.removeEventListener('abort', abort);
+        if (error) {
+          terminate('SIGTERM');
+          forceKill = setTimeout(() => terminate('SIGKILL'), 1500);
+          forceKill.unref();
+          reject(error);
+        } else resolve();
       };
-      timeout = setTimeout(() => { child.kill('SIGTERM'); finish(new Error(`Agent timed out after ${timeoutMs}ms`)); }, timeoutMs);
-      const abort = () => { child.kill('SIGTERM'); finish(new Error('Agent run cancelled')); };
+      const abort = () => finish(abortError());
+      timeout = setTimeout(() => finish(new Error(`Agent timed out after ${timeoutMs}ms`)), timeoutMs);
+      request.signal.addEventListener('abort', abort, { once: true });
       if (request.signal.aborted) abort();
-      else request.signal.addEventListener('abort', abort, { once: true });
       child.once('error', (error) => finish(error));
-      child.stderr.on('data', (chunk: Buffer) => request.emit(chunk.toString('utf8'), 'stderr'));
-      const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-      lines.on('line', (line) => {
-        if (Buffer.byteLength(line, 'utf8') > maxLineBytes) {
-          child.kill('SIGTERM');
-          finish(new Error(`Agent output line exceeds ${maxLineBytes} bytes`));
-          return;
-        }
-        if (options.outputFormat !== 'jsonl') {
-          request.emit(line, 'assistant');
-          return;
-        }
-        try {
-          const value: unknown = JSON.parse(line);
-          request.emit(textFromAgentEvent(value) ?? line, 'assistant');
-        } catch {
-          request.emit(line, 'stdout');
+      child.stdin.on('error', (error: NodeJS.ErrnoException) => { if (error.code !== 'EPIPE') finish(error); });
+      const withinBudget = (chunk: Buffer): boolean => {
+        outputBytes += chunk.byteLength;
+        if (outputBytes > maxOutputBytes) { finish(new Error(`Agent output exceeds ${maxOutputBytes} bytes`)); return false; }
+        return !settled;
+      };
+      child.stderr.on('data', (chunk: Buffer) => { if (withinBudget(chunk)) request.emit(chunk.toString('utf8'), 'stderr'); });
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (!withinBudget(chunk)) return;
+        for (const byte of chunk) {
+          pendingLineBytes = byte === 10 ? 0 : pendingLineBytes + 1;
+          if (pendingLineBytes > maxLineBytes) { finish(new Error(`Agent output line exceeds ${maxLineBytes} bytes`)); return; }
         }
       });
+      const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+      lines.on('line', (line) => {
+        if (settled) return;
+        try { emitLine(line); } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+      });
       child.once('close', (code, signal) => {
+        if (forceKill) { clearTimeout(forceKill); terminate('SIGKILL'); }
+        lines.close();
         if (settled) return;
         if (code === 0) finish();
         else finish(new Error(`Agent exited before completion (code=${code ?? 'null'}, signal=${signal ?? 'none'})`));

@@ -1,3 +1,4 @@
+import type { AgentOutputDecoder } from './output.js';
 import { CommandAgentAdapter, type CommandAgentOptions } from './index.js';
 import { getRolePreset, withRole } from './roles.js';
 import type { AgentAdapter } from '@agentcorps/runtime';
@@ -8,6 +9,7 @@ export interface AgentToolDefinition {
   readonly command: string;
   readonly args: readonly string[];
   readonly outputFormat: 'text' | 'jsonl';
+  readonly outputProtocol?: string;
   readonly promptPlacement?: 'argument' | 'stdin';
   readonly promptFlag?: string;
   readonly modelFlag?: string;
@@ -31,9 +33,17 @@ export interface CreateToolOptions {
 /** Definitions are data, never shell strings or dynamically imported code. */
 export class AgentToolRegistry {
   private readonly definitions = new Map<string, AgentToolDefinition>();
+  private readonly decoders = new Map<string, () => AgentOutputDecoder>();
+
+  registerDecoder(id: string, factory: () => AgentOutputDecoder): this {
+    if (this.decoders.has(id)) throw new Error(`Duplicate output decoder: ${id}`);
+    this.decoders.set(id, factory);
+    return this;
+  }
 
   register(definition: AgentToolDefinition): this {
     validateDefinition(definition);
+    if (definition.outputProtocol && !this.decoders.has(definition.outputProtocol)) throw new Error(`Unknown output protocol: ${definition.outputProtocol}`);
     if (this.definitions.has(definition.id)) throw new Error(`Duplicate agent tool: ${definition.id}`);
     this.definitions.set(definition.id, Object.freeze({ ...definition, args: Object.freeze([...definition.args]), ...(definition.versionArgs ? { versionArgs: Object.freeze([...definition.versionArgs]) } : {}) }));
     return this;
@@ -54,6 +64,7 @@ export class AgentToolRegistry {
     const adapter = new CommandAgentAdapter({
       id: definition.id, displayName: definition.displayName, command: options.command ?? definition.command,
       args, outputFormat: definition.outputFormat,
+      ...(definition.outputProtocol ? { outputDecoder: this.decoders.get(definition.outputProtocol)! } : {}),
       ...(definition.promptPlacement ? { promptPlacement: definition.promptPlacement } : {}),
       ...(definition.promptFlag && !options.args ? { promptFlag: definition.promptFlag } : {}),
       ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.env ? { env: options.env } : {}),
@@ -83,7 +94,7 @@ export function loadAgentToolDefinitions(value: unknown, registry: AgentToolRegi
   if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1 || !('tools' in value) || !Array.isArray(value.tools)) throw new Error('Agent config must contain version: 1 and tools: []');
   for (const entry of value.tools) {
     if (!entry || typeof entry !== 'object') throw new Error('Invalid agent tool definition');
-    const allowed = new Set(['id', 'displayName', 'command', 'args', 'outputFormat', 'promptPlacement', 'promptFlag', 'modelFlag', 'versionArgs', 'documentationUrl', 'defaultRole']);
+    const allowed = new Set(['id', 'displayName', 'command', 'args', 'outputFormat', 'outputProtocol', 'promptPlacement', 'promptFlag', 'modelFlag', 'versionArgs', 'documentationUrl', 'defaultRole']);
     if (Object.keys(entry).some((key) => !allowed.has(key))) throw new Error('Unknown field in agent tool definition');
     registry.register(entry as AgentToolDefinition);
   }
