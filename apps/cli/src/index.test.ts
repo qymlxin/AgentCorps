@@ -29,10 +29,12 @@ function runInteractiveCli(args: readonly string[], input: string, env: NodeJS.P
 }
 
 describe('CLI', () => {
-  it('lists all registered tools and generates help from the registry', async () => {
+  it('lists all registered tools and prints help successfully', async () => {
     const tools = JSON.parse((await execFileAsync('node', ['dist/index.js', 'agents'])).stdout) as Array<{ id: string }>;
     expect(tools.map((tool) => tool.id)).toEqual(['codex', 'claude-code', 'cursor', 'kimi', 'qwen', 'zcode', 'deepseek-harness', 'opencode', 'gemini', 'aider']);
-    await expect(execFileAsync('node', ['dist/index.js', 'help'])).rejects.toMatchObject({ stderr: expect.stringContaining('deepseek-harness, opencode, gemini, aider') });
+    const help = await execFileAsync('node', ['dist/index.js', '--help']);
+    expect(help.stdout).toContain('deepseek-harness, opencode, gemini, aider');
+    expect(help.stderr).toBe('');
   });
 
   it.each([

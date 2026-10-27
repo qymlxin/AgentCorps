@@ -16,8 +16,8 @@ import { DeviceTokenVerifier, ExternalIdentityResolver, SignedAccessTokenService
 import { JsonlSessionStore, migrateSessionStore, SessionService, SqliteSessionStore } from '@agentcorps/session';
 import { MockAgent, SqliteEventStore, SqliteUsageStore, TaskRuntime, UsageService, ApprovalRequiredError } from '@agentcorps/runtime';
 
-function usage(): never {
-  console.error(`AgentCorps CLI 0.1.0
+function usage(exitCode = 1): never {
+  const output = `AgentCorps CLI 0.1.0
 
 Commands:
   demo                                      Run an in-memory local demo
@@ -69,8 +69,9 @@ Commands:
 
 Built-in tools (TOOL): ${createAgentToolRegistry().list().map((tool) => tool.id).join(', ')}
 Use agents to inspect definitions; serve accepts the same tool and role options as task run.
-Role presets are prompt guidance, not permission or sandbox enforcement.`);
-  process.exit(1);
+Role presets are prompt guidance, not permission or sandbox enforcement.`;
+  (exitCode === 0 ? console.log : console.error)(output);
+  process.exit(exitCode);
 }
 
 let commandOptions: ReturnType<typeof parseCommandOptions> | undefined;
@@ -455,7 +456,7 @@ function printDoctor(report: DoctorReport): void {
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'help';
-  if (command === 'help') usage();
+  if (command === 'help' || command === '--help' || command === '-h') usage(0);
 
   if (command === 'agents') {
     console.log(JSON.stringify(agentTools().list(), null, 2));
