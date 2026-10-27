@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { CommandAgentAdapter, createAgentToolRegistry, loadAgentToolDefinitions, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type CommandAgentOptions, type RolePreset } from '@agentcorps/adapters';
 import type { AgentAdapter } from '@agentcorps/runtime';
-import type { Mode, TaskId } from '@agentcorps/domain';
+import type { Mode, Task, TaskEvent, TaskId, TaskStatus } from '@agentcorps/domain';
 import { listenGateway, type RunAgentContext } from '@agentcorps/gateway';
 import { SqliteChannelStateStore } from '@agentcorps/channels';
 import { JsonlMemoryStore, migrateMemoryStore, MemoryService, SqliteMemoryStore } from '@agentcorps/memory';
@@ -30,6 +30,7 @@ Commands:
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
   task show TASK_ID [--data-dir PATH]       Show a task and its events
+  task follow TASK_ID [--interval MS]        Follow persisted task output until terminal status
   agents                                    List configured external agent tools
   doctor [--json] [--strict] [--config PATH]  Diagnose gateway, agents, versions, login hints, and models
   roles                                     List reusable role prompt presets
@@ -326,6 +327,35 @@ function runtime(memory = memoryService()): TaskRuntime {
   const databasePath = join(dataDirectory(), 'agentcorps.db');
   return new TaskRuntime({ store: new SqliteEventStore(databasePath), usage: new UsageService(new SqliteUsageStore(databasePath)), memory });
 }
+
+function taskFromEvents(events: readonly TaskEvent[], taskId: TaskId): Task | undefined {
+  const created = events.find((event): event is Extract<TaskEvent, { type: 'task.created' }> => event.type === 'task.created');
+  if (!created) return undefined;
+  let task = created.payload.task;
+  for (const event of events) {
+    if (event.type === 'task.status_changed') task = { ...task, status: event.payload.to, updatedAt: event.occurredAt };
+  }
+  return task.id === taskId ? task : undefined;
+}
+
+async function followPersistedTask(local: TaskRuntime, id: TaskId, intervalMs: number): Promise<Task> {
+  const terminal: readonly TaskStatus[] = ['succeeded', 'failed', 'cancelled'];
+  const seen = new Set<string>();
+  while (true) {
+    const events = local.store.list(id);
+    const task = taskFromEvents(events, id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    for (const event of events) {
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\\n') ? event.payload.text : `${event.payload.text}\\n`);
+      if (event.type === 'task.status_changed') console.log(`\\n[${event.payload.to}]${event.payload.reason ? ` ${event.payload.reason}` : ''}`);
+    }
+    if (terminal.includes(task.status)) return task;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 
 function bridgeRunToSession(local: TaskRuntime, sessions: SessionService, task: import('@agentcorps/domain').Task, agentId?: string): () => void {
   let active = true;
@@ -874,6 +904,13 @@ async function main(): Promise<void> {
     const task = local.getTask(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     console.log(JSON.stringify({ task, events: local.store.list(id) }, null, 2));
+    return;
+  }
+  if (action === 'follow') {
+    const intervalMs = Number(flag('--interval') ?? '250');
+    if (!Number.isInteger(intervalMs) || intervalMs < 25) throw new Error('--interval must be an integer of at least 25ms');
+    const completed = await followPersistedTask(local, id, intervalMs);
+    process.exitCode = completed.status === 'succeeded' ? 0 : 1;
     return;
   }
   if (action === 'run') {

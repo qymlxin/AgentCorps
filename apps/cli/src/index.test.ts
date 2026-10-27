@@ -177,6 +177,17 @@ describe('CLI', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+  it('follows persisted task output after the task process has exited', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-follow-'));
+    try {
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'Follow', '--objective', 'follow persisted output', '--data-dir', directory])).stdout) as { id: string };
+      const run = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--agent', 'mock', '--data-dir', directory])).stdout) as { status: string };
+      expect(run.status).toBe('succeeded');
+      const followed = await execFileAsync('node', ['dist/index.js', 'task', 'follow', created.id, '--data-dir', directory]);
+      expect(followed.stdout).toContain('Planning: follow persisted output');
+      expect(followed.stdout).toContain('[succeeded]');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
   it('shares persistent tasks between CLI invocations', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-'));
     try {
