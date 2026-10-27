@@ -21,7 +21,7 @@ function usage(): never {
 
 Commands:
   demo                                      Run an in-memory local demo
-  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval] [--terminal-exec] [--terminal-no-approval] [--browser-control] [--browser-no-approval]    Start the local HTTP/SSE/WebSocket gateway
+  serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval] [--terminal-exec] [--terminal-no-approval] [--browser-control] [--browser-no-approval]    Start the local HTTP/SSE/WebSocket gateway (loopback is open by default)
   run "PROMPT" [--agent TOOL] [--model MODEL] [--role ROLE] [--instructions TEXT] [--data-dir PATH]
        Start one complete local Agent run with automatic session and task setup
   tui [--agent TOOL] [--model MODEL] [--role ROLE] [--data-dir PATH]
@@ -727,7 +727,6 @@ async function main(): Promise<void> {
     const workspaceRoot = resolveConfiguredPath(flag('--workspace-root') ?? agentCorpsConfig().paths?.workspaceRoot ?? process.cwd());
     const corsOrigin = flag('--cors-origin') ?? gatewayConfig?.corsOrigin;
     const memories = memoryService();
-    const deviceServices = token ? undefined : deviceAuth(dataDir);
     const identityRequired = hasFlag('--identity-required') || gatewayConfig?.identityRequired === true;
     const bindings = identityRequired ? identityStore(dataDir) : undefined;
     const identityResolver = bindings ? new ExternalIdentityResolver(bindings) : undefined;
@@ -741,7 +740,7 @@ async function main(): Promise<void> {
     const browserHosts = options().has('--browser-host') ? repeatedFlag('--browser-host') : browserConfig?.allowedHosts ?? [];
     const securityProfile = { ...createDefaultProfile(workspaceRoot, 'S2'), network: browserNetwork as 'none' | 'allowlist' | 'full', allowedHosts: browserHosts };
     const gatewayOptions = {
-      ...((token || readOnlyToken) ? { tokenVerifier: async (candidate: string) => candidate === readOnlyToken ? { roles: ['read'] as const } : candidate === token } : { tokenVerifier: async (candidate: string) => Boolean(deviceServices?.verifier.verify(candidate)) }),
+      ...((token || readOnlyToken) ? { tokenVerifier: async (candidate: string) => candidate === readOnlyToken ? { roles: ['read'] as const } : candidate === token } : {}),
       ...(corsOrigin ? { corsOrigin } : {}),
       channels: { stateStore: channelState, ...(identityResolver ? { identityResolver } : {}) },
       files: { root: workspaceRoot },
@@ -763,7 +762,6 @@ async function main(): Promise<void> {
       approvalStore.close();
       sessionStore.close();
       bindings?.close();
-      deviceServices?.store.close();
       closeAgentControlServices();
     };
     process.once('SIGINT', shutdown);
