@@ -74,4 +74,4 @@ node apps/cli/dist/index.js serve --agent kimi --role developer --data-dir ~/.ag
 
 ## 文档索引
 
-完整的产品需求、架构、API、安全模型、协议边界和部署限制见 `docs/`。每个外部协议和部署功能都明确区分本地 fixture 证据与真实环境验证边界。
+从零启动和使用产品请先阅读 [开箱即用指南](docs/00-getting-started.md)。
