@@ -111,11 +111,15 @@ describe('CLI', () => {
     }
   });
 
-  it('probes a configured command and reports its version and descriptor', async () => {
-    const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'probe', '--command', process.execPath])).stdout) as { available: boolean; descriptor: { transport: string; version: string } };
-    expect(result.available).toBe(true);
-    expect(result.descriptor.transport).toBe('stdio-jsonl');
-    expect(result.descriptor.version).not.toBe('unavailable');
+  it('provides machine-readable diagnostics for the runtime, agents, login hints, and models', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentcorps-cli-doctor-'));
+    try {
+      const result = JSON.parse((await execFileAsync('node', ['dist/index.js', 'doctor', '--json', '--data-dir', directory])).stdout) as { status: string; gateway: { status: string }; agents: Array<{ id: string; installed: boolean; login: { status: string }; model: { value: string } }> };
+      expect(['healthy', 'warning', 'error']).toContain(result.status);
+      expect(result.gateway.status).toBe('offline');
+      expect(result.agents.map((agent) => agent.id)).toContain('codex');
+      expect(result.agents.every((agent) => typeof agent.installed === 'boolean' && ['credential-detected', 'not-detected'].includes(agent.login.status) && agent.model.value)).toBe(true);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
   it('migrates legacy memory and restores a SQLite backup', async () => {

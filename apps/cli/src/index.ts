@@ -3,7 +3,7 @@ import { parseCommandOptions } from './options.js';
 import { defaultConfigPath, loadAgentCorpsConfig, resolveConfiguredPath, roleFromConfig, type AgentCorpsConfig, type AgentRuntimeConfig } from './config.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync, accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { CommandAgentAdapter, createAgentToolRegistry, loadAgentToolDefinitions, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type CommandAgentOptions, type RolePreset } from '@agentcorps/adapters';
@@ -31,6 +31,7 @@ Commands:
   task list [--data-dir PATH]               List persistent tasks
   task show TASK_ID [--data-dir PATH]       Show a task and its events
   agents                                    List configured external agent tools
+  doctor [--json] [--strict] [--config PATH]  Diagnose gateway, agents, versions, login hints, and models
   roles                                     List reusable role prompt presets
   task run TASK_ID [--agent mock|TOOL|command] [--data-dir PATH]
        [--config PATH] [--agents-config PATH] [--model MODEL]
@@ -342,12 +343,100 @@ function memoryService(): MemoryService {
   return new MemoryService(new SqliteMemoryStore(join(dataDirectory(), 'agentcorps.db')));
 }
 
+type DoctorStatus = 'healthy' | 'warning' | 'error';
+interface DoctorAgentReport {
+  readonly id: string;
+  readonly displayName: string;
+  readonly command: string;
+  readonly installed: boolean;
+  readonly version: string;
+  readonly login: { readonly status: 'credential-detected' | 'not-detected'; readonly environment: readonly string[] };
+  readonly model: { readonly value: string; readonly source: 'tool' | 'default' | 'provider-default' };
+  readonly documentationUrl?: string;
+  readonly output?: string;
+}
+interface DoctorReport {
+  readonly status: DoctorStatus;
+  readonly config: { readonly path: string; readonly status: 'found' | 'using-defaults' };
+  readonly data: { readonly directory: string; readonly database: string; readonly writable: boolean };
+  readonly gateway: { readonly url: string; readonly status: 'online' | 'offline'; readonly detail?: string };
+  readonly agents: readonly DoctorAgentReport[];
+}
+
+const credentialEnvironment: Readonly<Record<string, readonly string[]>> = {
+  codex: ['OPENAI_API_KEY'],
+  'claude-code': ['ANTHROPIC_API_KEY'],
+  cursor: ['CURSOR_API_KEY'],
+  kimi: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
+  qwen: ['DASHSCOPE_API_KEY', 'QWEN_API_KEY'],
+  zcode: ['ZAI_API_KEY', 'ZHIPUAI_API_KEY'],
+  'deepseek-harness': ['DEEPSEEK_API_KEY'],
+  opencode: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+  aider: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'],
+};
+
+async function gatewayDoctorCheck(url: string): Promise<DoctorReport['gateway']> {
+  try {
+    const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(1200) });
+    if (!response.ok) return { url, status: 'offline', detail: `HTTP ${response.status}` };
+    return { url, status: 'online' };
+  } catch (error) {
+    return { url, status: 'offline', detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function doctorReport(): Promise<DoctorReport> {
+  const configPath = flag('--config') ?? defaultConfigPath();
+  const configExists = existsSync(configPath);
+  const config = agentCorpsConfig();
+  const dataDir = dataDirectory();
+  const database = deviceDatabasePath(dataDir);
+  let writable = false;
+  try { mkdirSync(dataDir, { recursive: true }); accessSync(dataDir, constants.W_OK); writable = true; } catch { /* Report the failed write check. */ }
+  const host = config.gateway?.host ?? '127.0.0.1';
+  const port = config.gateway?.port ?? 43210;
+  const gateway = await gatewayDoctorCheck(`http://${host}:${port}`);
+  const agents = await Promise.all(agentTools().list().map(async (definition): Promise<DoctorAgentReport> => {
+    const configured = runtimeConfig(definition.id);
+    const probe = await probeAgent({ id: definition.id, displayName: definition.displayName, command: configured.command ?? definition.command, ...(definition.versionArgs ? { versionArgs: definition.versionArgs } : {}) });
+    const environment = (credentialEnvironment[definition.id] ?? []).filter((key) => Boolean(process.env[key] || configured.env?.[key]));
+    const model = configured.model ? { value: configured.model, source: 'tool' as const } : config.defaults?.model ? { value: config.defaults.model, source: 'default' as const } : { value: 'provider default', source: 'provider-default' as const };
+    return { id: definition.id, displayName: definition.displayName, command: probe.command, installed: probe.available, version: probe.version ?? 'unavailable', login: { status: environment.length ? 'credential-detected' : 'not-detected', environment }, model, ...(definition.documentationUrl ? { documentationUrl: definition.documentationUrl } : {}), ...(probe.output ? { output: probe.output.slice(0, 240) } : {}) };
+  }));
+  const status: DoctorStatus = !writable || gateway.status === 'offline' ? 'error' : agents.some((agent) => !agent.installed || agent.login.status === 'not-detected') ? 'warning' : 'healthy';
+  return { status, config: { path: configPath, status: configExists ? 'found' : 'using-defaults' }, data: { directory: dataDir, database, writable }, gateway, agents };
+}
+
+function printDoctor(report: DoctorReport): void {
+  const icon = (status: DoctorStatus | boolean): string => status === 'healthy' || status === true ? '✓' : status === 'warning' ? '!' : '×';
+  console.log(`AgentCorps doctor · ${report.status}`);
+  console.log(`${icon(report.config.status === 'found')} config     ${report.config.path} (${report.config.status})`);
+  console.log(`${icon(report.data.writable)} data       ${report.data.directory} (${report.data.writable ? 'writable' : 'not writable'})`);
+  console.log(`${icon(report.gateway.status === 'online')} gateway    ${report.gateway.url} (${report.gateway.status}${report.gateway.detail ? `: ${report.gateway.detail}` : ''})`);
+  console.log('\nAgents');
+  for (const agent of report.agents) {
+    console.log(`${icon(agent.installed)} ${agent.id.padEnd(18)} ${agent.installed ? agent.version : 'not installed'} · ${agent.command}`);
+    console.log(`  login: ${agent.login.status}${agent.login.environment.length ? ` (${agent.login.environment.join(', ')})` : ' (run the provider login command if this tool uses interactive auth)'}`);
+    console.log(`  model: ${agent.model.value} (${agent.model.source})`);
+  }
+  console.log('\nA warning means the installation or login could not be confirmed without contacting the provider.');
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'help';
   if (command === 'help') usage();
 
   if (command === 'agents') {
     console.log(JSON.stringify(agentTools().list(), null, 2));
+    return;
+  }
+
+  if (command === 'doctor') {
+    const report = await doctorReport();
+    if (hasFlag('--json')) console.log(JSON.stringify(report, null, 2));
+    else printDoctor(report);
+    if (hasFlag('--strict') && report.status !== 'healthy') process.exitCode = 1;
     return;
   }
 
