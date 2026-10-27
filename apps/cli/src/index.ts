@@ -2,7 +2,7 @@
 import { parseCommandOptions } from './options.js';
 import { defaultConfigPath, loadAgentCorpsConfig, resolveConfiguredPath, roleFromConfig, type AgentCorpsConfig, type AgentRuntimeConfig } from './config.js';
 import { createHash, randomBytes } from 'node:crypto';
-import { createInterface } from 'node:readline';
+import { runTui } from './tui.js';
 import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync, accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -517,101 +517,27 @@ async function main(): Promise<void> {
   }
 
   if (command === 'tui') {
-    const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY === true });
-    let sessionId: string | undefined;
     const dataDir = dataDirectory();
     const sessionStore = new SqliteSessionStore(join(dataDir, 'agentcorps.db'));
     const sessions = new SessionService(sessionStore);
     const approvalStore = new SqliteApprovalStore(deviceDatabasePath(dataDir));
     const approvalService = new ApprovalService(approvalStore);
     const local = runtime();
-    const ask = (question: string): Promise<string> => new Promise((resolve) => readline.question(question, resolve));
-    const printHelp = (): void => console.log('Commands: /help, /new, /tasks, /status, /history, /approvals, /approve ID, /deny ID, /resume TASK_ID, /cancel, /quit. Enter a prompt to run the configured Agent.');
-    const printTasks = (): void => {
-      const tasks = local.listTasks().filter((task) => !sessionId || task.sessionId === sessionId);
-      if (!tasks.length) { console.log('No tasks in the current session.'); return; }
-      for (const task of tasks) console.log(`${task.id}  ${task.status.padEnd(17)}  ${task.title}`);
-    };
-    const execute = async (task: import('@agentcorps/domain').Task): Promise<void> => {
+    const runTask = async (task: import('@agentcorps/domain').Task): Promise<import('@agentcorps/domain').Task> => {
       const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
-      const unsubscribe = local.store.subscribe((event) => {
-        if (event.aggregateId !== task.id) return;
-        if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\n') ? event.payload.text : `${event.payload.text}\n`);
-        if (event.type === 'task.status_changed') console.log(`\n[${event.payload.to}]`);
-      });
-      try {
-        const completed = await local.runTask(task.id, agentForRun());
-        if (completed.status === 'failed') console.error('Run failed. Use /history or task show to inspect the recorded events.');
-      } finally { unsubscribe(); bridge(); }
+      try { return await local.runTask(task.id, agentForRun()); }
+      finally { bridge(); }
     };
-    console.log('AgentCorps TUI · interactive local Agent session');
-    console.log(`Data: ${dataDir}`);
-    printHelp();
     try {
-      while (true) {
-        const input = (await ask(sessionId ? '\nYou › ' : '\nPrompt › ')).trim();
-        if (!input) continue;
-        if (input === '/quit' || input === '/exit') break;
-        if (input === '/help') { printHelp(); continue; }
-        if (input === '/new') { sessionId = undefined; console.log('Started a new session.'); continue; }
-        if (input === '/tasks') { printTasks(); continue; }
-        if (input === '/status') {
-          if (!sessionId) console.log('No active session yet.');
-          else { const session = sessions.get(sessionId); console.log(`Session: ${session?.title ?? sessionId}`); printTasks(); }
-          continue;
-        }
-        if (input === '/history') {
-          if (!sessionId) console.log('No active session yet.');
-          else for (const message of sessions.messages(sessionId)) console.log(`${message.role}: ${message.content}`);
-          continue;
-        }
-        if (input === '/approvals') {
-          const pending = approvalService.list().filter((approval) => approval.status === 'pending' && (!sessionId || approval.request.taskId === local.listTasks().find((task) => task.sessionId === sessionId && task.status === 'waiting_approval')?.id));
-          console.log(pending.length ? JSON.stringify(pending, null, 2) : 'No pending approvals.');
-          continue;
-        }
-        const approvalCommand = /^(\/approve|\/deny)\s+([^\s]+)$/.exec(input);
-        if (approvalCommand) {
-          const id = approvalCommand[2]!;
-          const approval = approvalService.get(id);
-          if (!approval) throw new Error(`Approval not found: ${id}`);
-          const decision = approvalCommand[1] === '/approve' ? approvalService.approve(id, 'tui-user') : approvalService.deny(id, 'tui-user');
-          console.log(JSON.stringify(decision, null, 2));
-          if (decision.status === 'approved') {
-            const waiting = local.getTask(approval.request.taskId as TaskId);
-            if (waiting?.status === 'waiting_approval') await execute(waiting);
-          }
-          continue;
-        }
-        const resumeCommand = /^\/resume\s+([^\s]+)$/.exec(input);
-        if (resumeCommand) {
-          const task = local.getTask(resumeCommand[1] as TaskId);
-          if (!task) { console.log(`Task not found: ${resumeCommand[1]}`); continue; }
-          if (task.status === 'running') { console.log(`Task is already running: ${task.id}`); continue; }
-          if (!['queued', 'waiting_approval'].includes(task.status)) { console.log(`Task is ${task.status}; only queued or waiting tasks can be resumed.`); continue; }
-          sessionId = task.sessionId;
-          await execute(task);
-          continue;
-        }
-        if (input === '/cancel') {
-          const active = local.listTasks().find((task) => task.sessionId === sessionId && ['queued', 'running', 'waiting_approval'].includes(task.status));
-          if (active) console.log(JSON.stringify(local.cancelTask(active.id), null, 2)); else console.log('No active run.');
-          continue;
-        }
-        const session = sessionId ? sessions.get(sessionId) : sessions.create({ workspaceId: 'local-workspace', title: input.slice(0, 80), mode: 'code' });
-        if (!session) throw new Error(`Session not found: ${sessionId}`);
-        sessionId = session.id;
-        const task = local.createTask({ workspaceId: session.workspaceId, sessionId: session.id, title: session.title, objective: input, mode: session.mode });
-        sessions.appendMessage({ sessionId: session.id, role: 'user', content: input, taskId: task.id });
-        await execute(task);
-      }
+      await runTui({ local, sessions, approvals: approvalService, dataDir, agentId: selectedAgentId, runTask });
     } finally {
-      readline.close();
+      local.shutdown('TUI exited');
       approvalStore.close();
       sessionStore.close();
     }
     return;
   }
+
 
   if (command === 'approval') {
     const action = process.argv[3];
