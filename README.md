@@ -22,10 +22,27 @@ node apps/cli/dist/index.js tui --agent mock --data-dir ~/.agentcorps
 node apps/cli/dist/index.js doctor
 node apps/cli/dist/index.js doctor --json
 
+# TypeScript high-level client
+pnpm --filter @agentcorps/client build
+```
+
+```ts
+import { AgentCorpsClient } from '@agentcorps/client';
+
+const client = new AgentCorpsClient({ apiBase: 'http://127.0.0.1:43210' });
+const result = await client.runAndWait(
+  { prompt: 'Explain the main modules in this repository', agent: 'mock' },
+  { onOutput: (text) => process.stdout.write(text) },
+);
+console.log(result.task.status);
+```
+
 # Start the desktop control plane (auto-starts a local gateway when needed)
 pnpm --filter @agentcorps/desktop build:desktop
 open apps/desktop/src-tauri/target/release/bundle/macos/AgentCorps.app
-```可通过 `pnpm --filter @agentcorps/console dev` 启动，采用 **React 19 + TypeScript + Vite**，使用 Vitest 和 React Testing Library 做前端回归测试；它使用网关的 HTTP、SSE 和 WebSocket 控制面，不直接执行 Agent 命令。远程部署应使用长随机 `--token`，只读设备可使用 `--read-only-token`。
+```
+
+可通过 `pnpm --filter @agentcorps/console dev` 启动，采用 **React 19 + TypeScript + Vite**，使用 Vitest 和 React Testing Library 做前端回归测试；它使用网关的 HTTP、SSE 和 WebSocket 控制面，不直接执行 Agent 命令。远程部署应使用长随机 `--token`，只读设备可使用 `--read-only-token`。
 
 ## 外部工具与角色
 

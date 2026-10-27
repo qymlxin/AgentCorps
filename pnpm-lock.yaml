@@ -114,6 +114,21 @@ importers:
 
   packages/channels: {}
 
+  packages/client:
+    dependencies:
+      '@agentcorps/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@agentcorps/memory':
+        specifier: workspace:*
+        version: link:../memory
+      '@agentcorps/security':
+        specifier: workspace:*
+        version: link:../security
+      '@agentcorps/session':
+        specifier: workspace:*
+        version: link:../session
+
   packages/domain: {}
 
   packages/extensions: {}
