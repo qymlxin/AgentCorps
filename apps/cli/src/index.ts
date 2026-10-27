@@ -525,7 +525,12 @@ async function main(): Promise<void> {
     const approvalService = new ApprovalService(approvalStore);
     const local = runtime();
     const ask = (question: string): Promise<string> => new Promise((resolve) => readline.question(question, resolve));
-    const printHelp = (): void => console.log('Commands: /help, /new, /history, /approvals, /approve ID, /deny ID, /cancel, /quit. Enter a prompt to run the configured Agent.');
+    const printHelp = (): void => console.log('Commands: /help, /new, /tasks, /status, /history, /approvals, /approve ID, /deny ID, /resume TASK_ID, /cancel, /quit. Enter a prompt to run the configured Agent.');
+    const printTasks = (): void => {
+      const tasks = local.listTasks().filter((task) => !sessionId || task.sessionId === sessionId);
+      if (!tasks.length) { console.log('No tasks in the current session.'); return; }
+      for (const task of tasks) console.log(`${task.id}  ${task.status.padEnd(17)}  ${task.title}`);
+    };
     const execute = async (task: import('@agentcorps/domain').Task): Promise<void> => {
       const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
       const unsubscribe = local.store.subscribe((event) => {
@@ -548,6 +553,12 @@ async function main(): Promise<void> {
         if (input === '/quit' || input === '/exit') break;
         if (input === '/help') { printHelp(); continue; }
         if (input === '/new') { sessionId = undefined; console.log('Started a new session.'); continue; }
+        if (input === '/tasks') { printTasks(); continue; }
+        if (input === '/status') {
+          if (!sessionId) console.log('No active session yet.');
+          else { const session = sessions.get(sessionId); console.log(`Session: ${session?.title ?? sessionId}`); printTasks(); }
+          continue;
+        }
         if (input === '/history') {
           if (!sessionId) console.log('No active session yet.');
           else for (const message of sessions.messages(sessionId)) console.log(`${message.role}: ${message.content}`);
@@ -569,6 +580,16 @@ async function main(): Promise<void> {
             const waiting = local.getTask(approval.request.taskId as TaskId);
             if (waiting?.status === 'waiting_approval') await execute(waiting);
           }
+          continue;
+        }
+        const resumeCommand = /^\/resume\s+([^\s]+)$/.exec(input);
+        if (resumeCommand) {
+          const task = local.getTask(resumeCommand[1] as TaskId);
+          if (!task) { console.log(`Task not found: ${resumeCommand[1]}`); continue; }
+          if (task.status === 'running') { console.log(`Task is already running: ${task.id}`); continue; }
+          if (!['queued', 'waiting_approval'].includes(task.status)) { console.log(`Task is ${task.status}; only queued or waiting tasks can be resumed.`); continue; }
+          sessionId = task.sessionId;
+          await execute(task);
           continue;
         }
         if (input === '/cancel') {

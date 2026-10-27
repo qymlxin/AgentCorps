@@ -30,10 +30,13 @@ TUI 会复用同一个 SQLite 数据库，自动创建 Session 和任务，显�
 
 - `/help`：显示命令帮助；
 - `/new`：开始新的 Session；
+- `/tasks`：列出当前会话的持久化任务；
+- `/status`：显示当前会话和任务状态；
 - `/history`：查看当前 Session 的消息；
 - `/approvals`：列出当前 Session 的待处理审批；
 - `/approve ID`：批准审批，并自动恢复对应的等待中任务；
 - `/deny ID`：拒绝审批；
+- `/resume TASK_ID`：恢复一个 queued 或 waiting_approval 任务；
 - `/cancel`：取消当前 Session 的活动任务；
 - `/quit` 或 `/exit`：退出 TUI。
 

@@ -288,8 +288,10 @@ describe('CLI', () => {
       const approvals = JSON.parse((await execFileAsync('node', ['dist/index.js', 'approval', 'list', '--data-dir', dataDir], { env })).stdout) as Array<{ id: string; status: string }>;
       const approval = approvals[0];
       expect(approval).toMatchObject({ status: 'pending' });
-      const tui = await runInteractiveCli(['tui', '--approval-mode', 'always', '--data-dir', dataDir], `/approvals\n/approve ${approval!.id}\n/quit\n`, env);
+      const tui = await runInteractiveCli(['tui', '--approval-mode', 'always', '--data-dir', dataDir], `/status\n/tasks\n/approvals\n/approve ${approval!.id}\n/quit\n`, env);
       expect(tui.code, `${tui.stdout}\n${tui.stderr}`).toBe(0);
+      expect(tui.stdout).toContain('No active session yet.');
+      expect(tui.stdout).toContain(created.id);
       expect(tui.stdout).toContain('tui approved run');
       expect(tui.stdout).toContain('"status": "approved"');
       const detail = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'show', created.id, '--data-dir', dataDir], { env })).stdout) as { task: { status: string } };

@@ -121,10 +121,13 @@ node apps/cli/dist/index.js tui \
 
 - `/help`：显示帮助；
 - `/new`：创建新的会话；
+- `/tasks`：列出当前会话的持久化任务；
+- `/status`：显示当前会话和任务状态；
 - `/history`：查看当前会话消息；
 - `/approvals`：查看待审批操作；
 - `/approve ID`：批准并恢复对应的等待任务；
 - `/deny ID`：拒绝审批；
+- `/resume TASK_ID`：恢复一个 queued 或 waiting_approval 任务；
 - `/cancel`：取消当前会话中的活动任务；
 - `/quit` 或 `/exit`：退出。
 
