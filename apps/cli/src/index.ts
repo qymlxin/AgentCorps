@@ -486,14 +486,28 @@ async function main(): Promise<void> {
   }
 
   if (command === 'tui') {
-    const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY === true });
     let sessionId: string | undefined;
     const dataDir = dataDirectory();
     const sessionStore = new SqliteSessionStore(join(dataDir, 'agentcorps.db'));
     const sessions = new SessionService(sessionStore);
+    const approvalStore = new SqliteApprovalStore(deviceDatabasePath(dataDir));
+    const approvalService = new ApprovalService(approvalStore);
     const local = runtime();
     const ask = (question: string): Promise<string> => new Promise((resolve) => readline.question(question, resolve));
-    const printHelp = (): void => console.log('Commands: /help, /new, /history, /cancel, /quit. Enter a prompt to run the configured Agent.');
+    const printHelp = (): void => console.log('Commands: /help, /new, /history, /approvals, /approve ID, /deny ID, /cancel, /quit. Enter a prompt to run the configured Agent.');
+    const execute = async (task: import('@agentcorps/domain').Task): Promise<void> => {
+      const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
+      const unsubscribe = local.store.subscribe((event) => {
+        if (event.aggregateId !== task.id) return;
+        if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\n') ? event.payload.text : `${event.payload.text}\n`);
+        if (event.type === 'task.status_changed') console.log(`\n[${event.payload.to}]`);
+      });
+      try {
+        const completed = await local.runTask(task.id, agentForRun());
+        if (completed.status === 'failed') console.error('Run failed. Use /history or task show to inspect the recorded events.');
+      } finally { unsubscribe(); bridge(); }
+    };
     console.log('AgentCorps TUI · interactive local Agent session');
     console.log(`Data: ${dataDir}`);
     printHelp();
@@ -509,6 +523,24 @@ async function main(): Promise<void> {
           else for (const message of sessions.messages(sessionId)) console.log(`${message.role}: ${message.content}`);
           continue;
         }
+        if (input === '/approvals') {
+          const pending = approvalService.list().filter((approval) => approval.status === 'pending' && (!sessionId || approval.request.taskId === local.listTasks().find((task) => task.sessionId === sessionId && task.status === 'waiting_approval')?.id));
+          console.log(pending.length ? JSON.stringify(pending, null, 2) : 'No pending approvals.');
+          continue;
+        }
+        const approvalCommand = /^(\/approve|\/deny)\s+([^\s]+)$/.exec(input);
+        if (approvalCommand) {
+          const id = approvalCommand[2]!;
+          const approval = approvalService.get(id);
+          if (!approval) throw new Error(`Approval not found: ${id}`);
+          const decision = approvalCommand[1] === '/approve' ? approvalService.approve(id, 'tui-user') : approvalService.deny(id, 'tui-user');
+          console.log(JSON.stringify(decision, null, 2));
+          if (decision.status === 'approved') {
+            const waiting = local.getTask(approval.request.taskId as TaskId);
+            if (waiting?.status === 'waiting_approval') await execute(waiting);
+          }
+          continue;
+        }
         if (input === '/cancel') {
           const active = local.listTasks().find((task) => task.sessionId === sessionId && ['queued', 'running', 'waiting_approval'].includes(task.status));
           if (active) console.log(JSON.stringify(local.cancelTask(active.id), null, 2)); else console.log('No active run.');
@@ -519,19 +551,11 @@ async function main(): Promise<void> {
         sessionId = session.id;
         const task = local.createTask({ workspaceId: session.workspaceId, sessionId: session.id, title: session.title, objective: input, mode: session.mode });
         sessions.appendMessage({ sessionId: session.id, role: 'user', content: input, taskId: task.id });
-        const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
-        const unsubscribe = local.store.subscribe((event) => {
-          if (event.aggregateId !== task.id) return;
-          if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\n') ? event.payload.text : `${event.payload.text}\n`);
-          if (event.type === 'task.status_changed') console.log(`\n[${event.payload.to}]`);
-        });
-        try {
-          const completed = await local.runTask(task.id, agentForRun());
-          if (completed.status === 'failed') console.error('Run failed. Use /history or task show to inspect the recorded events.');
-        } finally { unsubscribe(); bridge(); }
+        await execute(task);
       }
     } finally {
       readline.close();
+      approvalStore.close();
       sessionStore.close();
     }
     return;

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,27 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
+
+function runInteractiveCli(args: readonly string[], input: string, env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', ['dist/index.js', ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ stdout, stderr, code: code ?? -1 }));
+    const chunks = input.split(/(?<=\n)/);
+    let chunkIndex = 0;
+    const writeNext = (): void => {
+      const chunk = chunks[chunkIndex++];
+      if (chunk === undefined) { child.stdin.end(); return; }
+      child.stdin.write(chunk);
+      setTimeout(writeNext, 250);
+    };
+    writeNext();
+  });
+}
 
 describe('CLI', () => {
   it('lists all registered tools and generates help from the registry', async () => {
@@ -226,6 +247,43 @@ describe('CLI', () => {
       const resumed = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--approval-mode', 'always'], { env })).stdout) as { status: string };
       expect(resumed.status).toBe('succeeded');
       const consumed = JSON.parse((await execFileAsync('node', ['dist/index.js', 'approval', 'list'], { env })).stdout) as Array<{ status: string }>;
+      expect(consumed[0]?.status).toBe('consumed');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes a persisted approval from the interactive TUI command', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentcorps-tui-approval-home-'));
+    const dataDir = mkdtempSync(join(tmpdir(), 'agentcorps-tui-approval-data-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'agentcorps-tui-approval-workspace-'));
+    try {
+      const fixture = join(workspace, 'approved-tool.cjs');
+      mkdirSync(join(home, '.agentcorps'), { recursive: true });
+      writeFileSync(fixture, "console.log('tui approved run')");
+      writeFileSync(join(home, '.agentcorps', 'config.json'), JSON.stringify({
+        version: 1,
+        paths: { dataDir },
+        defaults: { agent: 'tui-approved-tool' },
+        tools: { 'tui-approved-tool': { workspaceRoot: workspace, cwd: workspace } },
+        toolDefinitions: [{ id: 'tui-approved-tool', displayName: 'TUI approved tool', command: process.execPath, args: [fixture], outputFormat: 'text', promptPlacement: 'argument' }],
+      }));
+      const env = { ...process.env, HOME: home };
+      const created = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'create', '--title', 'TUI approval', '--objective', 'resume from TUI', '--data-dir', dataDir], { env })).stdout) as { id: string };
+      const waiting = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'run', created.id, '--approval-mode', 'always', '--data-dir', dataDir], { env })).stdout) as { status: string };
+      expect(waiting.status).toBe('waiting_approval');
+      const approvals = JSON.parse((await execFileAsync('node', ['dist/index.js', 'approval', 'list', '--data-dir', dataDir], { env })).stdout) as Array<{ id: string; status: string }>;
+      const approval = approvals[0];
+      expect(approval).toMatchObject({ status: 'pending' });
+      const tui = await runInteractiveCli(['tui', '--approval-mode', 'always', '--data-dir', dataDir], `/approvals\n/approve ${approval!.id}\n/quit\n`, env);
+      expect(tui.code, `${tui.stdout}\n${tui.stderr}`).toBe(0);
+      expect(tui.stdout).toContain('tui approved run');
+      expect(tui.stdout).toContain('"status": "approved"');
+      const detail = JSON.parse((await execFileAsync('node', ['dist/index.js', 'task', 'show', created.id, '--data-dir', dataDir], { env })).stdout) as { task: { status: string } };
+      expect(detail.task.status).toBe('succeeded');
+      const consumed = JSON.parse((await execFileAsync('node', ['dist/index.js', 'approval', 'list', '--data-dir', dataDir], { env })).stdout) as Array<{ status: string }>;
       expect(consumed[0]?.status).toBe('consumed');
     } finally {
       rmSync(home, { recursive: true, force: true });
