@@ -80,7 +80,7 @@ describe('gateway', () => {
       const detail = await fetch(`${base}/runs/${accepted.task.id}`);
       expect((await detail.json() as { task: { status: string }; events: Array<{ type: string }> }).task.status).toBe('succeeded');
       const session = await fetch(`${base}/sessions/${accepted.session.id}`);
-      expect((await session.json() as { messages: unknown[] }).messages).toHaveLength(1);
+      expect((await session.json() as { messages: unknown[] }).messages).toHaveLength(2);
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
   it('streams valid SSE framing for ready and task events', async () => {

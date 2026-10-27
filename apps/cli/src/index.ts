@@ -2,6 +2,7 @@
 import { parseCommandOptions } from './options.js';
 import { defaultConfigPath, loadAgentCorpsConfig, resolveConfiguredPath, roleFromConfig, type AgentCorpsConfig, type AgentRuntimeConfig } from './config.js';
 import { createHash, randomBytes } from 'node:crypto';
+import { createInterface } from 'node:readline';
 import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -23,6 +24,8 @@ Commands:
   serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval] [--terminal-exec] [--terminal-no-approval] [--browser-control] [--browser-no-approval]    Start the local HTTP/SSE/WebSocket gateway
   run "PROMPT" [--agent TOOL] [--model MODEL] [--role ROLE] [--instructions TEXT] [--data-dir PATH]
        Start one complete local Agent run with automatic session and task setup
+  tui [--agent TOOL] [--model MODEL] [--role ROLE] [--data-dir PATH]
+       Start an interactive terminal Agent session
   task create --title T --objective O       Create a persistent task
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
@@ -323,6 +326,18 @@ function runtime(memory = memoryService()): TaskRuntime {
   return new TaskRuntime({ store: new SqliteEventStore(databasePath), usage: new UsageService(new SqliteUsageStore(databasePath)), memory });
 }
 
+function bridgeRunToSession(local: TaskRuntime, sessions: SessionService, task: import('@agentcorps/domain').Task, agentId?: string): () => void {
+  let active = true;
+  const unsubscribe = local.store.subscribe((event) => {
+    if (!active || event.aggregateId !== task.id) return;
+    if (event.type === 'run.output' && event.payload.text.trim()) {
+      try { sessions.appendMessage({ sessionId: task.sessionId, role: 'agent', content: event.payload.text, ...(agentId ? { agentId } : {}), taskId: task.id }); } catch { /* Keep the runtime event if the session is archived. */ }
+    }
+    if (event.type === 'task.status_changed' && ['succeeded', 'failed', 'cancelled', 'waiting_approval'].includes(event.payload.to)) { active = false; unsubscribe(); }
+  });
+  return unsubscribe;
+}
+
 function memoryService(): MemoryService {
   return new MemoryService(new SqliteMemoryStore(join(dataDirectory(), 'agentcorps.db')));
 }
@@ -360,20 +375,74 @@ async function main(): Promise<void> {
     const workspaceId = flag('--workspace-id') ?? 'local-workspace';
     const mode = flag('--mode') === 'work' ? 'work' : 'code';
     const sessionId = flag('--session-id');
-    const session = sessionId ? sessions.get(sessionId) : sessions.create({ workspaceId, title: flag('--title') ?? prompt.split('\\n')[0]!.slice(0, 80), mode });
+    const session = sessionId ? sessions.get(sessionId) : sessions.create({ workspaceId, title: flag('--title') ?? prompt.split('\n')[0]!.slice(0, 80), mode });
     if (!session) throw new Error(`Session not found: ${sessionId}`);
     const local = runtime();
     const task = local.createTask({ workspaceId: session.workspaceId, sessionId: session.id, title: flag('--title') ?? session.title, objective: prompt, mode: session.mode });
     sessions.appendMessage({ sessionId: session.id, role: 'user', content: prompt, taskId: task.id });
+    const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
     const unsubscribe = local.store.subscribe((event) => {
-      if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\\n') ? event.payload.text : `${event.payload.text}\\n`);
-      if (event.type === 'task.status_changed' && event.aggregateId === task.id && event.payload.to === 'waiting_approval') process.stderr.write(`\\nApproval required: ${event.payload.reason ?? 'the Agent requested approval'}\\n`);
+      if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\n') ? event.payload.text : `${event.payload.text}\n`);
+      if (event.type === 'task.status_changed' && event.aggregateId === task.id && event.payload.to === 'waiting_approval') process.stderr.write(`\nApproval required: ${event.payload.reason ?? 'the Agent requested approval'}\n`);
     });
     try {
       const completed = await local.runTask(task.id, agentForRun());
       if (completed.status === 'failed' || completed.status === 'cancelled') process.exitCode = 1;
     } finally {
       unsubscribe();
+      bridge();
+      sessionStore.close();
+    }
+    return;
+  }
+
+  if (command === 'tui') {
+    const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    let sessionId: string | undefined;
+    const dataDir = dataDirectory();
+    const sessionStore = new SqliteSessionStore(join(dataDir, 'agentcorps.db'));
+    const sessions = new SessionService(sessionStore);
+    const local = runtime();
+    const ask = (question: string): Promise<string> => new Promise((resolve) => readline.question(question, resolve));
+    const printHelp = (): void => console.log('Commands: /help, /new, /history, /cancel, /quit. Enter a prompt to run the configured Agent.');
+    console.log('AgentCorps TUI · interactive local Agent session');
+    console.log(`Data: ${dataDir}`);
+    printHelp();
+    try {
+      while (true) {
+        const input = (await ask(sessionId ? '\nYou › ' : '\nPrompt › ')).trim();
+        if (!input) continue;
+        if (input === '/quit' || input === '/exit') break;
+        if (input === '/help') { printHelp(); continue; }
+        if (input === '/new') { sessionId = undefined; console.log('Started a new session.'); continue; }
+        if (input === '/history') {
+          if (!sessionId) console.log('No active session yet.');
+          else for (const message of sessions.messages(sessionId)) console.log(`${message.role}: ${message.content}`);
+          continue;
+        }
+        if (input === '/cancel') {
+          const active = local.listTasks().find((task) => task.sessionId === sessionId && ['queued', 'running', 'waiting_approval'].includes(task.status));
+          if (active) console.log(JSON.stringify(local.cancelTask(active.id), null, 2)); else console.log('No active run.');
+          continue;
+        }
+        const session = sessionId ? sessions.get(sessionId) : sessions.create({ workspaceId: 'local-workspace', title: input.slice(0, 80), mode: 'code' });
+        if (!session) throw new Error(`Session not found: ${sessionId}`);
+        sessionId = session.id;
+        const task = local.createTask({ workspaceId: session.workspaceId, sessionId: session.id, title: session.title, objective: input, mode: session.mode });
+        sessions.appendMessage({ sessionId: session.id, role: 'user', content: input, taskId: task.id });
+        const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
+        const unsubscribe = local.store.subscribe((event) => {
+          if (event.aggregateId !== task.id) return;
+          if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\n') ? event.payload.text : `${event.payload.text}\n`);
+          if (event.type === 'task.status_changed') console.log(`\n[${event.payload.to}]`);
+        });
+        try {
+          const completed = await local.runTask(task.id, agentForRun());
+          if (completed.status === 'failed') console.error('Run failed. Use /history or task show to inspect the recorded events.');
+        } finally { unsubscribe(); bridge(); }
+      }
+    } finally {
+      readline.close();
       sessionStore.close();
     }
     return;

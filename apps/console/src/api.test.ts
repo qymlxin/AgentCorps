@@ -45,6 +45,17 @@ describe('gateway client', () => {
     expect(JSON.parse(fetcher.mock.calls[1]![1].body).sessionId).toBe('session-new');
   });
 
+  it('starts a high-level run with one gateway request and exposes run controls', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ task: { id: 'task-1' }, session: { id: 'session-1' }, status: 'accepted' })).mockResolvedValueOnce(Response.json({ task: { id: 'task-1' }, events: [] }));
+    vi.stubGlobal('fetch', fetcher);
+    const client = new GatewayClient(connection);
+    await client.run({ prompt: 'Review this repository', agent: 'codex', model: 'gpt-5', role: 'reviewer' });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(`${connection.apiBase}/runs`);
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({ prompt: 'Review this repository', agent: 'codex', model: 'gpt-5', role: 'reviewer' });
+    await client.runStatus('task-1');
+    expect(fetcher.mock.calls[1]?.[0]).toBe(`${connection.apiBase}/runs/task-1`);
+  });
+
   it('sends Git paths and commit messages as structured JSON', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ decision: 'approval_required', approval: { id: 'approval-git' } }, { status: 202 })).mockResolvedValueOnce(Response.json({ decision: 'approval_required', approval: { id: 'approval-git-2' } }, { status: 202 })).mockResolvedValueOnce(Response.json({ branch: 'main', entries: [] }));
     vi.stubGlobal('fetch', fetcher);

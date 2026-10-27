@@ -4,7 +4,7 @@ import { errorMessage, useDashboard } from './useDashboard.js';
 import { ShortcutOverlay } from './components/Shortcuts.js';
 import { FilesPanel } from './components/FilesPanel.js';
 import { shortcutAction, type ShortcutAction } from './shortcuts.js';
-import { SettingsDialog, TaskDialog } from './components/Dialogs.js';
+import { SettingsDialog, RunDialog, TaskDialog } from './components/Dialogs.js';
 import { ApprovalsPanel, EventsPanel, TasksPanel } from './components/Panels.js';
 import { SessionsPanel } from './components/SessionsPanel.js';
 import { GitPanel } from './components/GitPanel.js';
@@ -23,7 +23,7 @@ export function App() {
 function Console({ connection, onConnection }: { connection: Connection; onConnection: (value: Connection) => void }) {
   const data = useDashboard(connection);
   const [view, setView] = useState<View>('overview');
-  const [dialog, setDialog] = useState<'task' | 'settings' | null>(null);
+  const [dialog, setDialog] = useState<'task' | 'run' | 'settings' | null>(null);
   const [shortcutOverlay, setShortcutOverlay] = useState<'palette' | 'help' | null>(null);
   const [actionError, setActionError] = useState('');
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
@@ -83,7 +83,8 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
       <section className="content" aria-label="Management console">
         <div className="hero-row">
           <div><div className="eyebrow">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })}</div><h1>Control the work.<br /><em>Keep the context.</em></h1><p className="lede">One local command center for every agent, session, and decision.</p></div>
-          <button className="primary-button" onClick={() => setDialog('task')}><span aria-hidden="true">＋ </span>New task</button>
+          <button className="primary-button" onClick={() => setDialog('run')}><span aria-hidden="true">＋ </span>Run Agent</button>
+          <button className="secondary-button" onClick={() => setDialog('task')}>New task</button>
         </div>
         {(data.error || actionError) && <div role="alert" className="error-banner"><div>{actionError || data.error}{data.error && <p>Open connection settings to check the gateway URL and token.</p>}</div><button className="text-button" onClick={() => { setActionError(''); void data.refresh(); }}>Retry ↗</button></div>}
         <section className="metrics" aria-label="Runtime metrics">{[
@@ -104,6 +105,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
     </main>
     {shortcutOverlay && <ShortcutOverlay mode={shortcutOverlay} onAction={runShortcut} onClose={() => setShortcutOverlay(null)} />}
     {dialog === 'settings' && <SettingsDialog connection={connection} onSave={(value) => { onConnection(value); setDialog(null); }} onClose={() => setDialog(null)} />}
+    {dialog === 'run' && <RunDialog sessions={data.sessions} client={data.client} onStarted={() => { setDialog(null); void data.refresh(); }} onClose={() => setDialog(null)} />}
     {dialog === 'task' && <TaskDialog sessions={data.sessions} client={data.client} onClose={() => setDialog(null)} onCreated={() => { setDialog(null); void data.refresh(); }} />}
   </>;
 }

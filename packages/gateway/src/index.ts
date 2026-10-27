@@ -164,6 +164,21 @@ function usageFilter(url: URL): UsageFilter {
   };
 }
 
+function bridgeRunToSession(runtime: TaskRuntime, sessions: SessionService, task: Task, agentId?: string): () => void {
+  let active = true;
+  const unsubscribe = runtime.store.subscribe((event) => {
+    if (!active || event.aggregateId !== task.id) return;
+    if (event.type === 'run.output' && event.payload.text.trim()) {
+      try { sessions.appendMessage({ sessionId: task.sessionId, role: 'agent', content: event.payload.text, ...(agentId ? { agentId } : {}), taskId: task.id }); } catch { /* The task event remains authoritative if the session was archived. */ }
+    }
+    if (event.type === 'task.status_changed' && ['succeeded', 'failed', 'cancelled', 'waiting_approval'].includes(event.payload.to)) {
+      active = false;
+      unsubscribe();
+    }
+  });
+  return unsubscribe;
+}
+
 export interface ChannelGatewayOptions {
   readonly adapters?: Partial<Record<ChannelKind, ChannelAdapter>>;
   readonly connectors?: Partial<Record<ChannelKind, ChannelConnector>>;
@@ -776,7 +791,8 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
           ...(body.role ? { role: String(body.role) } : {}),
           ...(body.instructions ? { instructions: String(body.instructions) } : {}),
         };
-        void runtime.runTask(task.id, options.agentFactory?.(task, context) ?? new MockAgent());
+        const bridge = bridgeRunToSession(runtime, sessions, task, context.agent);
+        void runtime.runTask(task.id, options.agentFactory?.(task, context) ?? new MockAgent()).finally(bridge);
         return sendJson(response, 202, { task, session, status: 'accepted' });
       }
       const runId = runIdFrom(pathname);
