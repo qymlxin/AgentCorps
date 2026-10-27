@@ -74,12 +74,14 @@ pnpm --filter @agentcorps/console preview
 
 生产环境在 HTTPS 或 localhost 下注册 service worker，仅缓存静态页面、带内容哈希的 JS/CSS 和 manifest。缓存版本随构建产物变化；不缓存网关响应、任务数据或带认证的请求。首次联网加载成功后，可离线打开控制台外壳，离线期间仍会显示网关不可用。开发模式会注销旧 service worker，以免缓存干扰热更新。
 
-`apps/desktop` 提供 Tauri 2 桌面壳，直接复用 React 的 `dist` 产物：
+`apps/desktop` 提供 Tauri 2 桌面应用，直接复用 React 的 `dist` 产物。桌面应用启动时会通过 Tauri 原生命令检查 `127.0.0.1:43210`；端口没有健康网关时，它会优先启动仓库内的 `apps/cli/dist/index.js`，也支持通过 `AGENTCORPS_CLI` 指定 CLI 可执行文件。桌面进程负责子进程生命周期，关闭桌面应用时会回收它启动的网关；如果检测到已有网关，则不会接管或关闭已有进程。自动启动的网关使用桌面进程生成的临时令牌，控制台会自动接收，不需要手工填写。
 
 ```bash
 pnpm --filter @agentcorps/desktop dev
 pnpm --filter @agentcorps/desktop build:desktop
 ```
+
+桌面启动失败时，界面会显示可读错误并提示运行 `agentcorps doctor`。
 
 桌面打包需要 Rust 和对应平台工具（macOS 需要 Xcode 工具链）。桌面版仍需独立启动本地网关，不会自动运行 Agent 或后台服务。生产桌面内容安全策略当前只允许默认本地网关 `127.0.0.1:43210`；如需远程网关，必须先显式调整 `tauri.conf.json` 的允许来源并重新打包。开发策略额外允许 Vite 热更新，生产策略不放宽内联脚本。
 

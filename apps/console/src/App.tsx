@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadConnection, saveConnection, type ApprovalAction, type Connection, type TaskAction } from './api.js';
+import { ensureDesktopGateway, isDesktopRuntime } from './desktop.js';
 import { errorMessage, useDashboard } from './useDashboard.js';
 import { ShortcutOverlay } from './components/Shortcuts.js';
 import { FilesPanel } from './components/FilesPanel.js';
@@ -16,11 +17,29 @@ type View = 'overview' | 'sessions' | 'events' | 'files' | 'git' | 'terminal' | 
 
 export function App() {
   const [connection, setConnection] = useState(loadConnection);
-  // A connection switch remounts all connection-specific state and cancels old effects.
-  return <Console key={`${connection.apiBase}\n${connection.token}`} connection={connection} onConnection={(value) => { saveConnection(value); setConnection(value); }} />;
+  const [desktopReady, setDesktopReady] = useState(() => !isDesktopRuntime());
+  const [desktopError, setDesktopError] = useState('');
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let active = true;
+    void ensureDesktopGateway().then((managed) => {
+      if (!active) return;
+      if (managed) {
+        saveConnection(managed);
+        setConnection(managed);
+      }
+    }).catch((reason: unknown) => {
+      if (active) setDesktopError(errorMessage(reason));
+    }).finally(() => {
+      if (active) setDesktopReady(true);
+    });
+    return () => { active = false; };
+  }, []);
+  if (!desktopReady) return <div className="startup-screen" role="status"><strong>Starting local AgentCorps runtime…</strong><span>Checking the local gateway and preparing your workspace.</span></div>;
+  return <Console key={`${connection.apiBase}\n${connection.token}`} connection={connection} startupError={desktopError} onConnection={(value) => { saveConnection(value); setConnection(value); }} />;
 }
 
-function Console({ connection, onConnection }: { connection: Connection; onConnection: (value: Connection) => void }) {
+function Console({ connection, startupError, onConnection }: { connection: Connection; startupError: string; onConnection: (value: Connection) => void }) {
   const data = useDashboard(connection);
   const [view, setView] = useState<View>('overview');
   const [dialog, setDialog] = useState<'task' | 'run' | 'settings' | null>(null);
@@ -86,7 +105,7 @@ function Console({ connection, onConnection }: { connection: Connection; onConne
           <button className="primary-button" onClick={() => setDialog('run')}><span aria-hidden="true">＋ </span>Run Agent</button>
           <button className="secondary-button" onClick={() => setDialog('task')}>New task</button>
         </div>
-        {(data.error || actionError) && <div role="alert" className="error-banner"><div>{actionError || data.error}{data.error && <p>Open connection settings to check the gateway URL and token.</p>}</div><button className="text-button" onClick={() => { setActionError(''); void data.refresh(); }}>Retry ↗</button></div>}
+        {(startupError || data.error || actionError) && <div role="alert" className="error-banner"><div>{startupError || actionError || data.error}{(startupError || data.error) && <p>Open connection settings to check the gateway URL and token, or run <code>agentcorps doctor</code> for diagnostics.</p>}</div><button className="text-button" onClick={() => { setActionError(''); void data.refresh(); }}>Retry ↗</button></div>}
         <section className="metrics" aria-label="Runtime metrics">{[
           ['ACTIVE TASKS', activeTasks, 'in the runtime'], ['SESSIONS', data.sessions.length, 'shared threads'], ['EVENTS', data.eventCount, 'replayable facts'], ['APPROVALS', data.approvals.filter((approval) => approval.status === 'pending').length, 'awaiting decision'],
         ].map(([label, value, note], index) => <article className={`metric ${index % 2 ? 'accent' : ''}`} key={label}><span className="metric-label">{label}</span><strong>{data.loading ? '—' : value}</strong><span className="metric-note">{note}</span></article>)}</section>
