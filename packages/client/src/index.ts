@@ -24,6 +24,15 @@ export interface AgentRunInput {
 export interface AgentRunAccepted { readonly task: Task; readonly session: Session; readonly status: 'accepted'; }
 export interface AgentRunSnapshot { readonly task: Task; readonly events: readonly TaskEvent[]; }
 export interface AgentRunResult extends AgentRunSnapshot { readonly output: string; }
+export interface AgentRunHandle {
+  readonly id: string;
+  readonly accepted: AgentRunAccepted;
+  snapshot(signal?: AbortSignal): Promise<AgentRunSnapshot>;
+  events(signal?: AbortSignal): Promise<{ events: TaskEvent[] }>;
+  wait(handlers?: RunEventHandlers): Promise<AgentRunResult>;
+  cancel(signal?: AbortSignal): Promise<{ task: Task }>;
+  retry(signal?: AbortSignal): Promise<{ task: Task }>;
+}
 export interface RunEventHandlers {
   readonly onEvent?: (event: TaskEvent) => void;
   readonly onOutput?: (text: string, event: Extract<TaskEvent, { type: 'run.output' }>) => void;
@@ -32,6 +41,7 @@ export interface RunEventHandlers {
 }
 export interface AgentCorpsClientOptions extends ClientConnection { readonly defaultPollMs?: number; }
 export interface CreateSessionInput { readonly workspaceId?: string; readonly title: string; readonly mode?: 'code' | 'work'; }
+export interface SessionSearchOptions { readonly workspaceId?: string; readonly role?: 'user' | 'agent' | 'system' | 'tool'; readonly limit?: number; readonly signal?: AbortSignal; }
 export interface CreateTaskInput { readonly workspaceId?: string; readonly sessionId?: string; readonly title: string; readonly objective: string; readonly mode?: 'code' | 'work'; }
 export interface FileEntry { readonly name: string; readonly path: string; readonly kind: 'file' | 'directory'; readonly size?: number; readonly modifiedAt: string; }
 export interface FileListing { readonly root: string; readonly path: string; readonly truncated: boolean; readonly entries: FileEntry[]; }
@@ -51,6 +61,18 @@ export interface UsageSummary { readonly kind: UsageRecord['kind']; readonly too
 export interface ChannelInfo { readonly kind: string; readonly configured: boolean; }
 export interface EventStreamOptions { readonly lastEventId?: string; readonly signal?: AbortSignal; }
 export interface SessionSearchResult { readonly session: Session; readonly message: SessionMessage; }
+export interface MemoryWriteInput {
+  readonly scope: 'global' | 'workspace' | 'session';
+  readonly content: string;
+  readonly workspaceId?: string;
+  readonly sessionId?: string;
+  readonly source?: 'user' | 'agent' | 'system';
+  readonly sensitivity?: 'public' | 'private' | 'secret';
+  readonly sourceEventId?: string;
+  readonly confidence?: number;
+  readonly expiresAt?: string;
+  readonly signal?: AbortSignal;
+}
 export interface ApprovalRequestInput { readonly taskId: string; readonly capability: 'fs.read' | 'fs.write' | 'process.exec' | 'network.connect' | 'secret.read'; readonly requestId?: string; readonly path?: string; readonly command?: string; readonly host?: string; readonly ttlMs?: number; }
 export interface ApiErrorBody { readonly error?: string; }
 
@@ -94,7 +116,10 @@ export class AgentCorpsClient {
   run(input: AgentRunInput, signal?: AbortSignal): Promise<AgentRunAccepted> {
     const prompt = input.prompt.trim();
     if (!prompt) throw new Error('Run prompt cannot be empty');
-    return this.request('/runs', { method: 'POST', body: JSON.stringify(input), signal: signal ?? null });
+    return this.request('/runs', { method: 'POST', body: JSON.stringify({ ...input, prompt }), signal: signal ?? null });
+  }
+  async startRun(input: AgentRunInput, signal?: AbortSignal): Promise<AgentRunHandle> {
+    return new AgentRunHandleImpl(this, await this.run(input, signal));
   }
   runAction(id: string, action: 'cancel' | 'retry', signal?: AbortSignal): Promise<{ task: Task }> {
     return this.request(`/runs/${encodeURIComponent(id)}/${action}`, { method: 'POST', signal: signal ?? null });
@@ -112,15 +137,20 @@ export class AgentCorpsClient {
     return this.request<{ message: SessionMessage }>(`/sessions/${encodeURIComponent(id)}/messages`, { method: 'POST', body: JSON.stringify({ role: 'user', content }), signal: signal ?? null }).then((result) => result.message);
   }
   archiveSession(id: string, signal?: AbortSignal): Promise<{ session: Session }> { return this.request(`/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST', signal: signal ?? null }); }
-  searchSessions(query: string, workspaceId?: string, signal?: AbortSignal): Promise<{ results: SessionSearchResult[] }> {
-    const params = new URLSearchParams({ query });
-    if (workspaceId) params.set('workspaceId', workspaceId);
-    return this.request(`/sessions/search?${params.toString()}`, { signal: signal ?? null });
+  searchSessions(query: string, options: SessionSearchOptions = {}): Promise<{ results: SessionSearchResult[] }> {
+    const params = new URLSearchParams({ query: query.trim() });
+    if (!query.trim()) throw new Error('Session search query cannot be empty');
+    if (options.workspaceId) params.set('workspaceId', options.workspaceId);
+    if (options.role) params.set('role', options.role);
+    if (options.limit !== undefined) params.set('limit', String(options.limit));
+    return this.request(`/sessions/search?${params.toString()}`, { signal: options.signal ?? null });
   }
   approvals(signal?: AbortSignal): Promise<{ approvals: Approval[] }> { return this.request('/approvals', { signal: signal ?? null }); }
+  approval(id: string, signal?: AbortSignal): Promise<{ approval: Approval }> { return this.request(`/approvals/${encodeURIComponent(id)}`, { signal: signal ?? null }); }
   approvalRequest(input: ApprovalRequestInput, signal?: AbortSignal): Promise<{ decision: string; approval?: Approval }> {
     return this.request('/approvals', { method: 'POST', body: JSON.stringify(removeUndefined({ ...input })), signal: signal ?? null });
   }
+  consumeApproval(id: string, signal?: AbortSignal): Promise<{ approval: Approval }> { return this.request(`/approvals/${encodeURIComponent(id)}/consume`, { method: 'POST', signal: signal ?? null }); }
   approve(id: string, decidedBy = 'client-user', reason?: string, signal?: AbortSignal): Promise<{ approval: Approval }> {
     return this.decide(id, 'approve', decidedBy, reason, signal);
   }
@@ -135,9 +165,12 @@ export class AgentCorpsClient {
     if (options.limit !== undefined) params.set('limit', String(options.limit));
     return this.request(`/memory?${params.toString()}`, { signal: options.signal ?? null });
   }
-  saveMemory(record: { scope: 'global' | 'workspace' | 'session'; content: string; workspaceId?: string; sessionId?: string; sensitivity?: 'public' | 'private' | 'secret'; signal?: AbortSignal }): Promise<{ memory: MemoryRecord }> {
+  saveMemory(record: MemoryWriteInput): Promise<{ memory: MemoryRecord }> {
     const { signal, ...body } = record;
-    return this.request('/memory', { method: 'POST', body: JSON.stringify(body), signal: signal ?? null });
+    return this.request('/memory', { method: 'POST', body: JSON.stringify(removeUndefined({ source: 'user', sensitivity: 'private', ...body })), signal: signal ?? null });
+  }
+  deleteMemory(id: string, signal?: AbortSignal): Promise<{ memory: MemoryRecord }> {
+    return this.request(`/memory/${encodeURIComponent(id)}`, { method: 'DELETE', signal: signal ?? null });
   }
   files(path = '', signal?: AbortSignal): Promise<FileListing> {
     const query = path ? `?path=${encodeURIComponent(path)}` : '';
@@ -237,6 +270,16 @@ export class AgentCorpsClient {
     }
     return body as T;
   }
+}
+
+export class AgentRunHandleImpl implements AgentRunHandle {
+  readonly id: string;
+  constructor(private readonly client: AgentCorpsClient, readonly accepted: AgentRunAccepted) { this.id = accepted.task.id; }
+  snapshot(signal?: AbortSignal): Promise<AgentRunSnapshot> { return this.client.task(this.id, signal); }
+  events(signal?: AbortSignal): Promise<{ events: TaskEvent[] }> { return this.client.runEvents(this.id, signal); }
+  wait(handlers: RunEventHandlers = {}): Promise<AgentRunResult> { return this.client.waitForRun(this.id, handlers); }
+  cancel(signal?: AbortSignal): Promise<{ task: Task }> { return this.client.runAction(this.id, 'cancel', signal); }
+  retry(signal?: AbortSignal): Promise<{ task: Task }> { return this.client.runAction(this.id, 'retry', signal); }
 }
 
 function queryString(values: Record<string, string | number | undefined>): string {

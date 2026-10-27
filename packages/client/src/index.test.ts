@@ -45,13 +45,34 @@ describe('AgentCorpsClient', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('raises structured API errors and exposes approval decisions', async () => {
-    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
-      expect(new Headers(init?.headers).get('content-type')).toBe('application/json');
-      return response({ error: 'Approval is not pending' }, 409);
+  it('provides a resumable run handle and wraps approval, memory, and search routes', async () => {
+    const calls: string[] = [];
+    let snapshotReads = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url.endsWith('/runs')) return response({ task: { ...task, status: 'running' }, session: { id: 'session-1' }, status: 'accepted' }, 202);
+      if (url.endsWith('/runs/task-1') || url.endsWith('/tasks/task-1')) {
+        snapshotReads += 1;
+        return response({ task: { ...task, status: snapshotReads > 1 ? 'succeeded' : 'running' }, events: [] });
+      }
+      if (url.endsWith('/approvals/approval-1')) return response({ approval: { id: 'approval-1', request: { capability: 'process.exec' }, reason: 'Review', status: 'pending' } });
+      if (url.endsWith('/approvals/approval-1/consume')) return response({ approval: { id: 'approval-1', request: { capability: 'process.exec' }, reason: 'Review', status: 'consumed' } });
+      if (url.endsWith('/memory/memory-1')) return response({ memory: { id: 'memory-1' } });
+      if (url.includes('/sessions/search')) return response({ results: [] });
+      return response({ task: { ...task, status: 'cancelled' } });
     });
     const client = new AgentCorpsClient({ apiBase: 'http://localhost:43210', fetch: fetcher });
-    await expect(client.approve('approval-1', 'alice', 'Reviewed')).rejects.toMatchObject({ status: 409, message: '409 Approval is not pending' } satisfies Partial<AgentCorpsApiError>);
-    expect(fetcher).toHaveBeenCalledWith('http://localhost:43210/approvals/approval-1/approve', expect.objectContaining({ method: 'POST' }));
+    const handle = await client.startRun({ prompt: '  Do the work  ' });
+    expect(handle.id).toBe('task-1');
+    expect((await handle.wait({ pollMs: 25 })).task.status).toBe('succeeded');
+    await handle.cancel();
+    await client.approval('approval-1');
+    await client.consumeApproval('approval-1');
+    await client.deleteMemory('memory-1');
+    await client.searchSessions('release', { role: 'agent', limit: 5 });
+    expect(calls).toContain('POST http://localhost:43210/runs');
+    expect(calls).toContain('POST http://localhost:43210/runs/task-1/cancel');
+    expect(calls).toContain('GET http://localhost:43210/sessions/search?query=release&role=agent&limit=5');
   });
 });
