@@ -5,7 +5,7 @@
   "identifier": "com.agentcorps.desktop",
   "build": {
     "beforeDevCommand": "pnpm --filter @agentcorps/console dev",
-    "beforeBuildCommand": "pnpm --filter @agentcorps/console build",
+    "beforeBuildCommand": "pnpm --filter @agentcorps/domain build && pnpm --filter @agentcorps/session build && pnpm --filter @agentcorps/console build",
     "devUrl": "http://127.0.0.1:4173",
     "frontendDist": "../../console/dist"
   },
