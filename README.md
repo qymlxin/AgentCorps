@@ -11,16 +11,14 @@ pnpm install
 pnpm typecheck
 pnpm test
 pnpm --filter @agentcorps/cli build
+# The repository entry point builds the CLI on first use, then forwards arguments
+pnpm agentcorps -- doctor
+pnpm agentcorps -- run "Explain the main modules in this repository" --agent mock --data-dir ~/.agentcorps
+pnpm agentcorps -- tui --agent mock --data-dir ~/.agentcorps
+
+# Equivalent direct command after building the CLI
+pnpm --filter @agentcorps/cli build
 node apps/cli/dist/index.js serve --data-dir ~/.agentcorps
-
-# One-shot run: creates the session and task automatically
-node apps/cli/dist/index.js run "Explain the main modules in this repository" --agent mock --data-dir ~/.agentcorps
-
-# Interactive terminal client
-node apps/cli/dist/index.js tui --agent mock --data-dir ~/.agentcorps
-
-node apps/cli/dist/index.js doctor
-node apps/cli/dist/index.js doctor --json
 
 # TypeScript high-level client
 pnpm --filter @agentcorps/client build

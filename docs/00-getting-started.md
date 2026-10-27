@@ -32,7 +32,15 @@ pnpm test
 pnpm --filter @agentcorps/cli build
 ```
 
-构建完成后，下面的命令都可以把 `node apps/cli/dist/index.js` 替换成已安装的 `agentcorps` 命令。
+构建完成后，下面的命令都可以把 `node apps/cli/dist/index.js` 替换成已安装的 `agentcorps` 命令。若直接从仓库使用，也可以通过统一入口命令执行；首次执行会自动构建 CLI：
+
+```bash
+pnpm agentcorps -- doctor
+pnpm agentcorps -- run "分析这个仓库的主要模块" --agent mock --data-dir ~/.agentcorps
+pnpm agentcorps -- tui --agent mock --data-dir ~/.agentcorps
+```
+
+`pnpm agentcorps -- COMMAND ...` 只是仓库入口转发，不会改变 CLI 的数据目录、配置或权限行为。
 
 ## 3. 第一次运行：先用 mock Agent 验证环境
 

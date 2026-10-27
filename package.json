@@ -9,7 +9,8 @@
     "typecheck": "pnpm -r build && pnpm -r typecheck",
     "test": "pnpm -r --workspace-concurrency=1 test",
     "audit:release": "node scripts/release-audit.mjs",
-    "dev:cli": "pnpm --filter @agentcorps/cli dev"
+    "dev:cli": "pnpm --filter @agentcorps/cli dev",
+    "agentcorps": "node scripts/agentcorps.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
