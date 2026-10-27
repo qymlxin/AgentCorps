@@ -54,6 +54,19 @@ export interface Connection {
   readonly apiBase: string;
   readonly token: string;
 }
+export interface RunInput {
+  readonly prompt: string;
+  readonly title?: string;
+  readonly workspaceId?: string;
+  readonly sessionId?: string;
+  readonly mode?: 'code' | 'work';
+  readonly agent?: string;
+  readonly model?: string;
+  readonly role?: string;
+  readonly instructions?: string;
+}
+export interface RunAccepted { readonly task: Task; readonly session: Session; readonly status: 'accepted'; }
+export interface RunSnapshot { readonly task: Task; readonly events: TaskEvent[]; }
 export interface NewTask {
   readonly title: string;
   readonly objective: string;
@@ -107,6 +120,18 @@ export class GatewayClient {
 
   tasks(signal?: AbortSignal): Promise<{ tasks: Task[] }> {
     return this.request('/tasks', signal ? { signal } : {});
+  }
+  run(input: RunInput, signal?: AbortSignal): Promise<RunAccepted> {
+    return this.request('/runs', { method: 'POST', body: JSON.stringify(input), ...(signal ? { signal } : {}) });
+  }
+  runStatus(id: string, signal?: AbortSignal): Promise<RunSnapshot> {
+    return this.request(`/runs/${encodeURIComponent(id)}`, signal ? { signal } : {});
+  }
+  runEvents(id: string, signal?: AbortSignal): Promise<{ events: TaskEvent[] }> {
+    return this.request(`/runs/${encodeURIComponent(id)}/events`, signal ? { signal } : {});
+  }
+  runAction(id: string, action: 'cancel' | 'retry'): Promise<{ task: Task }> {
+    return this.request(`/runs/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
   }
   sessions(signal?: AbortSignal): Promise<{ sessions: Session[] }> {
     return this.request('/sessions', signal ? { signal } : {});

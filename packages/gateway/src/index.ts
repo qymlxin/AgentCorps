@@ -3,7 +3,7 @@ import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
-import type { TaskId } from '@agentcorps/domain';
+import type { Task, TaskId } from '@agentcorps/domain';
 import { InMemoryMemoryStore, MemoryService, type MemoryRecord, type MemorySensitivity, type MemoryScope } from '@agentcorps/memory';
 import { ApprovalService, ExternalIdentityResolver, InMemoryApprovalStore, InMemoryAuditLog, isWithin, PolicyEngine, type SecurityCapability, type SecurityContext, type ToolRequest } from '@agentcorps/security';
 import { InMemorySessionStore, SessionService, type MessageRole, type SessionMode, type SessionSearchOptions } from '@agentcorps/session';
@@ -94,6 +94,11 @@ async function readJson(request: IncomingMessage): Promise<JsonRecord> {
   return parseJsonBody(await readBody(request));
 }
 
+function runIdFrom(pathname: string): TaskId | undefined {
+  const match = /^\/runs\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
+  return match?.[1] as TaskId | undefined;
+}
+
 function taskIdFrom(pathname: string): TaskId | undefined {
   const match = /^\/tasks\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
   return match?.[1] as TaskId | undefined;
@@ -178,6 +183,25 @@ export interface MemoryGatewayOptions {
   readonly allowSensitiveSearch?: boolean;
 }
 
+export interface RunInput {
+  readonly prompt: string;
+  readonly title?: string;
+  readonly workspaceId?: string;
+  readonly sessionId?: string;
+  readonly mode?: 'code' | 'work';
+  readonly agent?: string;
+  readonly model?: string;
+  readonly role?: string;
+  readonly instructions?: string;
+}
+
+export interface RunAgentContext {
+  readonly agent?: string;
+  readonly model?: string;
+  readonly role?: string;
+  readonly instructions?: string;
+}
+
 export interface UsageGatewayOptions {
   readonly service?: UsageService;
 }
@@ -209,7 +233,7 @@ export interface GatewayOptions {
   readonly terminal?: TerminalGatewayOptions;
   readonly browser?: BrowserGatewayOptions;
   readonly security?: SecurityGatewayOptions;
-  readonly agentFactory?: (task: import('@agentcorps/domain').Task) => AgentAdapter;
+  readonly agentFactory?: (task: Task, context?: RunAgentContext) => AgentAdapter;
 }
 
 const channelKinds: readonly ChannelKind[] = ['feishu', 'dingtalk', 'wecom', 'custom'];
@@ -734,6 +758,41 @@ export function createGatewayServer(runtime: TaskRuntime, sessions = new Session
         return sendJson(response, 201, { message });
       }
       if (sessionId && request.method === 'POST' && sessionAction === 'archive') return sendJson(response, 200, { session: sessions.archive(sessionId) });
+      if (request.method === 'POST' && pathname === '/runs') {
+        const body = await readJson(request);
+        const prompt = String(body.prompt ?? body.objective ?? '').trim();
+        if (!prompt) return sendJson(response, 400, { error: 'Run prompt cannot be empty' });
+        const workspaceId = String(body.workspaceId ?? 'local-workspace');
+        const mode = body.mode === 'work' ? 'work' : 'code';
+        const requestedSessionId = body.sessionId ? String(body.sessionId) : undefined;
+        const existingSession = requestedSessionId ? sessions.get(requestedSessionId) : undefined;
+        if (requestedSessionId && !existingSession) return sendJson(response, 404, { error: 'Session not found' });
+        const session = existingSession ?? sessions.create({ workspaceId, title: String(body.title ?? prompt.split('\\n')[0]?.slice(0, 80) ?? 'Agent run'), mode });
+        const task = runtime.createTask({ workspaceId: session.workspaceId, sessionId: session.id, title: String(body.title ?? session.title), objective: prompt, mode: session.mode });
+        sessions.appendMessage({ sessionId: session.id, role: 'user', content: prompt, taskId: task.id });
+        const context: RunAgentContext = {
+          ...(body.agent ? { agent: String(body.agent) } : {}),
+          ...(body.model ? { model: String(body.model) } : {}),
+          ...(body.role ? { role: String(body.role) } : {}),
+          ...(body.instructions ? { instructions: String(body.instructions) } : {}),
+        };
+        void runtime.runTask(task.id, options.agentFactory?.(task, context) ?? new MockAgent());
+        return sendJson(response, 202, { task, session, status: 'accepted' });
+      }
+      const runId = runIdFrom(pathname);
+      const runAction = pathname.split('/')[3];
+      if (runId && request.method === 'GET' && !runAction) {
+        const task = runtime.getTask(runId);
+        if (!task) return sendJson(response, 404, { error: 'Run not found' });
+        return sendJson(response, 200, { task, events: runtime.store.list(runId) });
+      }
+      if (runId && request.method === 'GET' && runAction === 'events') {
+        const task = runtime.getTask(runId);
+        if (!task) return sendJson(response, 404, { error: 'Run not found' });
+        return sendJson(response, 200, { events: runtime.store.list(runId) });
+      }
+      if (runId && request.method === 'POST' && runAction === 'cancel') return sendJson(response, 200, { task: runtime.cancelTask(runId) });
+      if (runId && request.method === 'POST' && runAction === 'retry') return sendJson(response, 200, { task: runtime.retryTask(runId) });
       if (request.method === 'GET' && pathname === '/tasks') {
         sendJson(response, 200, { tasks: runtime.listTasks() });
         return;

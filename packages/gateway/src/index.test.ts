@@ -56,6 +56,33 @@ describe('gateway', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
+  it('provides a high-level run endpoint with automatic session and task setup', async () => {
+    const runtime = new TaskRuntime({ id: (prefix) => `${prefix}-1` });
+    const server = await listenGateway(runtime, 0, '127.0.0.1', undefined, {
+      agentFactory: () => ({
+        descriptor: { id: 'fixture-agent', displayName: 'Fixture Agent', version: '1', transport: 'mock', capabilities: [] },
+        async execute(request) { request.emit('high-level response'); },
+      }),
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      const created = await fetch(`${base}/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'Explain the repository', title: 'First run', agent: 'fixture-agent' }) });
+      expect(created.status).toBe(202);
+      const accepted = await created.json() as { task: { id: string }; session: { id: string } };
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const status = await fetch(`${base}/runs/${accepted.task.id}`);
+        const snapshot = await status.json() as { task: { status: string } };
+        if (snapshot.task.status === 'succeeded') break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const detail = await fetch(`${base}/runs/${accepted.task.id}`);
+      expect((await detail.json() as { task: { status: string }; events: Array<{ type: string }> }).task.status).toBe('succeeded');
+      const session = await fetch(`${base}/sessions/${accepted.session.id}`);
+      expect((await session.json() as { messages: unknown[] }).messages).toHaveLength(1);
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+  });
   it('streams valid SSE framing for ready and task events', async () => {
     const server = await listenGateway(new TaskRuntime(), 0);
     const address = server.address();

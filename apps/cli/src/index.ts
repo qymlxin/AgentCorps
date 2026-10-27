@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { CommandAgentAdapter, createAgentToolRegistry, loadAgentToolDefinitions, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type CommandAgentOptions, type RolePreset } from '@agentcorps/adapters';
 import type { AgentAdapter } from '@agentcorps/runtime';
 import type { Mode, TaskId } from '@agentcorps/domain';
-import { listenGateway } from '@agentcorps/gateway';
+import { listenGateway, type RunAgentContext } from '@agentcorps/gateway';
 import { SqliteChannelStateStore } from '@agentcorps/channels';
 import { JsonlMemoryStore, migrateMemoryStore, MemoryService, SqliteMemoryStore } from '@agentcorps/memory';
 import { DeviceTokenVerifier, ExternalIdentityResolver, SignedAccessTokenService, SqliteApprovalStore, SqliteAuditLog, PolicyEngine, ApprovalService, createDefaultProfile, isWithin, SqliteDeviceIdentityStore, SqliteExternalIdentityBindingStore, type ChannelKind, type DeviceIdentity, type ExternalIdentityRole } from '@agentcorps/security';
@@ -21,6 +21,8 @@ function usage(): never {
 Commands:
   demo                                      Run an in-memory local demo
   serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval] [--terminal-exec] [--terminal-no-approval] [--browser-control] [--browser-no-approval]    Start the local HTTP/SSE/WebSocket gateway
+  run "PROMPT" [--agent TOOL] [--model MODEL] [--role ROLE] [--instructions TEXT] [--data-dir PATH]
+       Start one complete local Agent run with automatic session and task setup
   task create --title T --objective O       Create a persistent task
        [--mode code|work] [--data-dir PATH]
   task list [--data-dir PATH]               List persistent tasks
@@ -106,14 +108,14 @@ function runtimeConfig(agentId: string): AgentRuntimeConfig {
   return agentCorpsConfig().tools?.[agentId] ?? {};
 }
 
-function selectedAgentId(): string {
-  return flag('--agent') ?? agentCorpsConfig().defaults?.agent ?? 'mock';
+function selectedAgentId(override?: string): string {
+  return override ?? flag('--agent') ?? agentCorpsConfig().defaults?.agent ?? 'mock';
 }
 
-function selectedRole(): { role?: RolePreset; configured: boolean } {
+function selectedRole(agentId = selectedAgentId(), requestedRole?: string): { role?: RolePreset; configured: boolean } {
   const config = agentCorpsConfig();
-  const configured = runtimeConfig(selectedAgentId());
-  const roleId = flag('--role') ?? configured.role ?? config.defaults?.role;
+  const configured = runtimeConfig(agentId);
+  const roleId = requestedRole ?? flag('--role') ?? configured.role ?? config.defaults?.role;
   const roleFile = flag('--role-file');
   if (roleId && roleFile) throw new Error('--role and --role-file are mutually exclusive');
   if (roleFile) {
@@ -125,8 +127,8 @@ function selectedRole(): { role?: RolePreset; configured: boolean } {
   return { configured: true, role: roleFromConfig(roleId, config) ?? getRolePreset(roleId) };
 }
 
-function agentInstructions(): string | undefined {
-  return flag('--instructions') ?? runtimeConfig(selectedAgentId()).instructions ?? agentCorpsConfig().defaults?.instructions;
+function agentInstructions(agentId = selectedAgentId()): string | undefined {
+  return flag('--instructions') ?? runtimeConfig(agentId).instructions ?? agentCorpsConfig().defaults?.instructions;
 }
 
 let configuredTools: ReturnType<typeof createAgentToolRegistry> | undefined;
@@ -145,11 +147,12 @@ function agentTools() {
   return registry;
 }
 
-function agentForRun(): AgentAdapter {
-  const roleSelection = selectedRole();
-  const instructions = agentInstructions();
-  const adapter = withRole(unconfiguredAgentForRun(roleSelection.configured), { ...(roleSelection.role ? { role: roleSelection.role } : {}), ...(instructions !== undefined ? { instructions } : {}) });
-  return withAgentControls(adapter, selectedAgentId());
+function agentForRun(context?: RunAgentContext): AgentAdapter {
+  const agentId = selectedAgentId(context?.agent);
+  const roleSelection = selectedRole(agentId, context?.role);
+  const instructions = context?.instructions ?? agentInstructions(agentId);
+  const adapter = withRole(unconfiguredAgentForRun(roleSelection.configured, context, agentId), { ...(roleSelection.role ? { role: roleSelection.role } : {}), ...(instructions !== undefined ? { instructions } : {}) });
+  return withAgentControls(adapter, agentId);
 }
 
 function agentControlConfig(agentId: string): { cwd: string; workspaceRoot: string; approvalMode: 'never' | 'always' } {
@@ -162,13 +165,13 @@ function agentControlConfig(agentId: string): { cwd: string; workspaceRoot: stri
   return { cwd, workspaceRoot, approvalMode };
 }
 
-function unconfiguredAgentForRun(roleConfigured = false): AgentAdapter {
-  const selected = selectedAgentId();
+function unconfiguredAgentForRun(roleConfigured = false, context?: RunAgentContext, agentId = selectedAgentId()): AgentAdapter {
+  const selected = agentId;
   const configured = runtimeConfig(selected);
   const controls = agentControlConfig(selected);
   const command = flag('--agent-command') ?? configured.command;
   const args = options().has('--agent-arg') ? repeatedFlag('--agent-arg') : configured.args;
-  const model = flag('--model') ?? configured.model ?? agentCorpsConfig().defaults?.model;
+  const model = context?.model ?? flag('--model') ?? configured.model ?? agentCorpsConfig().defaults?.model;
   if (selected === 'mock') return new MockAgent();
   if (selected === 'command') {
     if (!command) throw new Error('--agent-command or tools.command is required for --agent command');
@@ -345,6 +348,34 @@ async function main(): Promise<void> {
     const created = local.createTask({ workspaceId: 'local-workspace', sessionId: 'local-session', title: 'AgentCorps demo task', objective: 'demonstrate a task flowing through the local event runtime', mode: (hasFlag('--work') ? 'work' : 'code') as Mode });
     await local.runTask(created.id, new MockAgent());
     unsubscribe();
+    return;
+  }
+
+  if (command === 'run') {
+    const prompt = process.argv[3]?.trim();
+    if (!prompt) throw new Error('Usage: agentcorps run "PROMPT" [options]');
+    const dataDir = dataDirectory();
+    const sessionStore = new SqliteSessionStore(join(dataDir, 'agentcorps.db'));
+    const sessions = new SessionService(sessionStore);
+    const workspaceId = flag('--workspace-id') ?? 'local-workspace';
+    const mode = flag('--mode') === 'work' ? 'work' : 'code';
+    const sessionId = flag('--session-id');
+    const session = sessionId ? sessions.get(sessionId) : sessions.create({ workspaceId, title: flag('--title') ?? prompt.split('\\n')[0]!.slice(0, 80), mode });
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    const local = runtime();
+    const task = local.createTask({ workspaceId: session.workspaceId, sessionId: session.id, title: flag('--title') ?? session.title, objective: prompt, mode: session.mode });
+    sessions.appendMessage({ sessionId: session.id, role: 'user', content: prompt, taskId: task.id });
+    const unsubscribe = local.store.subscribe((event) => {
+      if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\\n') ? event.payload.text : `${event.payload.text}\\n`);
+      if (event.type === 'task.status_changed' && event.aggregateId === task.id && event.payload.to === 'waiting_approval') process.stderr.write(`\\nApproval required: ${event.payload.reason ?? 'the Agent requested approval'}\\n`);
+    });
+    try {
+      const completed = await local.runTask(task.id, agentForRun());
+      if (completed.status === 'failed' || completed.status === 'cancelled') process.exitCode = 1;
+    } finally {
+      unsubscribe();
+      sessionStore.close();
+    }
     return;
   }
 
@@ -561,7 +592,7 @@ async function main(): Promise<void> {
       browser: { endpoint: flag('--browser-endpoint') ?? browserConfig?.endpoint ?? 'http://127.0.0.1:9222', allowControl: hasFlag('--browser-control') || browserConfig?.allowControl === true, requireApproval: !hasFlag('--browser-no-approval') && browserConfig?.requireApproval !== false, ...(browserConfig?.timeoutMs === undefined ? {} : { timeoutMs: browserConfig.timeoutMs }), ...(browserConfig?.maxTextBytes === undefined ? {} : { maxTextBytes: browserConfig.maxTextBytes }), ...(browserConfig?.maxScreenshotBytes === undefined ? {} : { maxScreenshotBytes: browserConfig.maxScreenshotBytes }) },
       memory: { service: memories },
       security: { context: { mode: 'code' as const, profile: securityProfile }, engine: new PolicyEngine(audit), approvals: new ApprovalService(approvalStore), allowApprovalDecisions: true },
-      agentFactory: () => agentForRun(),
+      agentFactory: (_task: import('@agentcorps/domain').Task, context: RunAgentContext | undefined) => agentForRun(context),
     };
     const sessionStore = new SqliteSessionStore(join(dataDir, 'agentcorps.db'));
     const localRuntime = runtime(memories);
