@@ -12,6 +12,7 @@ import { GitPanel } from './components/GitPanel.js';
 import { TerminalPanel } from './components/TerminalPanel.js';
 import { BrowserPanel } from './components/BrowserPanel.js';
 import { UsagePanel } from './components/UsagePanel.js';
+import { LiveRunPanel } from './components/LiveRunPanel.js';
 
 type View = 'overview' | 'sessions' | 'events' | 'files' | 'git' | 'terminal' | 'browser' | 'usage';
 
@@ -110,6 +111,7 @@ function Console({ connection, startupError, onConnection }: { connection: Conne
           ['ACTIVE TASKS', activeTasks, 'in the runtime'], ['SESSIONS', data.sessions.length, 'shared threads'], ['EVENTS', data.eventCount, 'replayable facts'], ['APPROVALS', data.approvals.filter((approval) => approval.status === 'pending').length, 'awaiting decision'],
         ].map(([label, value, note], index) => <article className={`metric ${index % 2 ? 'accent' : ''}`} key={label}><span className="metric-label">{label}</span><strong>{data.loading ? '—' : value}</strong><span className="metric-note">{note}</span></article>)}</section>
         {view === 'overview' && <>
+          <LiveRunPanel tasks={data.tasks} events={data.events} />
           <div className="work-grid"><TasksPanel tasks={data.tasks} loading={data.loading} busy={busy} onAction={taskAction} onRefresh={data.refresh} /><EventsPanel events={data.events} live={live} /></div>
           <ApprovalsPanel approvals={data.approvals} error={data.approvalError} busy={busy} onDecision={decide} />
         </>}

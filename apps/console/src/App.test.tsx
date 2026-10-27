@@ -44,7 +44,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     act(() => { FakeWebSocket.instances[0]!.open(); FakeWebSocket.instances[0]!.message({ event: event() }); });
     await screen.findByText('run.output');
     expect(screen.getByRole('status').textContent).toContain('live');
@@ -64,7 +64,7 @@ describe('React management console', () => {
     gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'Files' }));
     await screen.findByText('README.md');
     await user.click(screen.getByRole('button', { name: /README\.md/ }));
@@ -75,7 +75,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'Git' }));
     expect(await screen.findByRole('heading', { name: 'Git' })).toBeTruthy();
     expect((await screen.findByText(/-hello/)).textContent).toContain('-hello');
@@ -90,7 +90,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'Terminal' }));
     await user.type(screen.getByLabelText('COMMAND'), 'node');
     await user.click(screen.getByRole('button', { name: 'Run command →' }));
@@ -102,7 +102,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'Browser' }));
     expect(await screen.findByRole('heading', { name: 'Browser' })).toBeTruthy();
     await screen.findByText('Example page');
@@ -115,7 +115,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'Usage' }));
     expect(await screen.findByRole('heading', { name: 'Model and tool calls' })).toBeTruthy();
     expect((await screen.findAllByText(/codex · gpt-5/)).length).toBeGreaterThan(0);
@@ -128,7 +128,7 @@ describe('React management console', () => {
     gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.keyboard('n');
     expect(screen.getByRole('dialog')).toBeTruthy();
     await user.keyboard('{Escape}');
@@ -150,7 +150,7 @@ describe('React management console', () => {
     gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'New task' }));
     await user.type(screen.getByLabelText('Title', { exact: true }), 'n');
     expect(screen.queryByRole('heading', { name: 'Shortcuts' })).toBeNull();
@@ -160,7 +160,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'New task' }));
     await user.type(screen.getByLabelText('Title', { exact: true }), 'New release');
     await user.type(screen.getByLabelText('Objective'), 'Review it');
@@ -173,7 +173,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     await user.click(screen.getByRole('button', { name: 'New task' }));
     await user.type(screen.getByLabelText('Title', { exact: true }), '  Release review  ');
     await user.type(screen.getByLabelText('Objective'), '  Check changes  ');
@@ -200,7 +200,7 @@ describe('React management console', () => {
     const fetcher = gateway();
     const user = userEvent.setup();
     const { unmount } = render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     const first = FakeWebSocket.instances[0]!;
     await user.click(screen.getByRole('button', { name: 'Connection settings' }));
     await user.clear(screen.getByLabelText('API base URL'));
@@ -221,7 +221,7 @@ describe('React management console', () => {
     const normal = fetcher.getMockImplementation()!;
     fetcher.mockImplementation((url, init) => String(url).endsWith('/approvals') ? Promise.resolve(Response.json({ error: 'disabled' }, { status: 503 })) : normal(url, init));
     render(<App />);
-    await screen.findByText(task.title);
+    await screen.findAllByText(task.title);
     expect(screen.getByText('Approvals are not enabled on this gateway.')).toBeTruthy();
   });
 });
