@@ -6,15 +6,15 @@ import { runTui } from './tui.js';
 import { copyFileSync, existsSync, mkdirSync, chmodSync, readFileSync, renameSync, writeFileSync, accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { CommandAgentAdapter, createAgentToolRegistry, loadAgentToolDefinitions, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type CommandAgentOptions, type RolePreset } from '@agentcorps/adapters';
-import type { AgentAdapter } from '@agentcorps/runtime';
+import { AcpHost, CommandAgentAdapter, createAgentToolRegistry, loadAgentToolDefinitions, loadAcpAgentServers, probeAgent, getRolePreset, ROLE_PRESETS, withRole, type AgentProbeOptions, type CommandAgentOptions, type RolePreset } from '@agentcorps/adapters';
+import type { AgentAdapter, AgentControl } from '@agentcorps/runtime';
 import type { Mode, Task, TaskEvent, TaskId, TaskStatus } from '@agentcorps/domain';
 import { listenGateway, type RunAgentContext } from '@agentcorps/gateway';
 import { SqliteChannelStateStore } from '@agentcorps/channels';
 import { JsonlMemoryStore, migrateMemoryStore, MemoryService, SqliteMemoryStore } from '@agentcorps/memory';
 import { DeviceTokenVerifier, ExternalIdentityResolver, SignedAccessTokenService, SqliteApprovalStore, SqliteAuditLog, PolicyEngine, ApprovalService, createDefaultProfile, isWithin, SqliteDeviceIdentityStore, SqliteExternalIdentityBindingStore, type ChannelKind, type DeviceIdentity, type ExternalIdentityRole } from '@agentcorps/security';
 import { JsonlSessionStore, migrateSessionStore, SessionService, SqliteSessionStore } from '@agentcorps/session';
-import { MockAgent, SqliteEventStore, SqliteUsageStore, TaskRuntime, UsageService, ApprovalRequiredError } from '@agentcorps/runtime';
+import { MockAgent, SqliteEventStore, SqliteUsageStore, TaskRuntime, UsageService, ApprovalRequiredError, type AgentConversationMessage } from '@agentcorps/runtime';
 
 function usage(exitCode = 1): never {
   const output = `AgentCorps CLI 0.1.0
@@ -24,7 +24,7 @@ Commands:
   serve [--port 43210] [--host 127.0.0.1] [--token TOKEN] [--read-only-token TOKEN] [--data-dir PATH] [--workspace-root PATH] [--git-write] [--git-no-approval] [--terminal-exec] [--terminal-no-approval] [--browser-control] [--browser-no-approval]    Start the local HTTP/SSE/WebSocket gateway (loopback is open by default)
   run "PROMPT" [--agent TOOL] [--model MODEL] [--role ROLE] [--instructions TEXT] [--data-dir PATH]
        Start one complete local Agent run with automatic session and task setup
-  tui [--agent TOOL] [--model MODEL] [--role ROLE] [--data-dir PATH]
+  tui [--agent TOOL] [--model MODEL] [--role ROLE] [--session-id SESSION_ID] [--data-dir PATH]
        Start an interactive terminal Agent session
   task create --title T --objective O       Create a persistent task
        [--mode code|work] [--data-dir PATH]
@@ -32,10 +32,11 @@ Commands:
   task show TASK_ID [--data-dir PATH]       Show a task and its events
   task follow TASK_ID [--interval MS]        Follow persisted task output until terminal status
   agents                                    List configured external agent tools
+       [--agents-config PATH] [--acp-config PATH]
   doctor [--json] [--strict] [--config PATH]  Diagnose gateway, agents, versions, login hints, and models
   roles                                     List reusable role prompt presets
   task run TASK_ID [--agent mock|TOOL|command] [--data-dir PATH]
-       [--config PATH] [--agents-config PATH] [--model MODEL]
+       [--config PATH] [--agents-config PATH] [--acp-config PATH] [--model MODEL]
        [--role developer|reviewer|planner|tester|security|writer] [--role-file PATH] [--instructions TEXT]
        [--agent-command PATH] [--agent-arg ARG] [--workspace-root PATH] [--approval-mode never|always]
        [--sandbox-backend macos|container]
@@ -149,6 +150,12 @@ function agentTools() {
     if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Agent configuration exceeds 1 MiB');
     loadAgentToolDefinitions(JSON.parse(contents) as unknown, registry);
   }
+  const acpConfig = flag('--acp-config');
+  if (acpConfig) {
+    const contents = readFileSync(resolveConfiguredPath(acpConfig), 'utf8');
+    if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('ACP configuration exceeds 1 MiB');
+    loadAcpAgentServers(JSON.parse(contents) as unknown, registry);
+  }
   configuredTools = registry;
   return registry;
 }
@@ -192,6 +199,17 @@ function unconfiguredAgentForRun(roleConfigured = false, context?: RunAgentConte
     ...(roleConfigured ? { role: null } : {}),
     ...(configured.timeoutMs === undefined ? {} : { timeoutMs: configured.timeoutMs }),
     ...(sandbox ? { sandbox } : {}),
+    acp: {
+      host: (request) => {
+        const security = agentControlServices();
+        return new AcpHost({
+          workspaceRoot: controls.workspaceRoot,
+          policy: security.engine,
+          approvals: security.approvals,
+          context: { mode: request.task.mode, profile: createDefaultProfile(controls.workspaceRoot, 'S2') },
+        });
+      },
+    },
   });
 }
 
@@ -233,6 +251,7 @@ function withAgentControls(adapter: AgentAdapter, agentId: string): AgentAdapter
   const services = agentControlServices();
   return {
     descriptor: adapter.descriptor,
+    ...(adapter.control ? { control: adapter.control } : {}),
     async execute(request) {
       const toolRequest = {
         requestId: `agent:${request.task.id}:${adapter.descriptor.id}`,
@@ -253,6 +272,7 @@ function withAgentControls(adapter: AgentAdapter, agentId: string): AgentAdapter
       }
       await adapter.execute(request);
     },
+    ...(adapter.close ? { close: () => adapter.close!() } : {}),
   };
 }
 
@@ -430,7 +450,7 @@ async function doctorReport(): Promise<DoctorReport> {
   const gateway = await gatewayDoctorCheck(`http://${host}:${port}`);
   const agents = await Promise.all(agentTools().list().map(async (definition): Promise<DoctorAgentReport> => {
     const configured = runtimeConfig(definition.id);
-    const probe = await probeAgent({ id: definition.id, displayName: definition.displayName, command: configured.command ?? definition.command, ...(definition.versionArgs ? { versionArgs: definition.versionArgs } : {}) });
+    const probe = await probeAgent({ id: definition.id, displayName: definition.displayName, command: configured.command ?? definition.command, ...(definition.versionArgs ? { versionArgs: definition.versionArgs } : {}) }, 2_500);
     const environment = (credentialEnvironment[definition.id] ?? []).filter((key) => Boolean(process.env[key] || configured.env?.[key]));
     const model = configured.model ? { value: configured.model, source: 'tool' as const } : config.defaults?.model ? { value: config.defaults.model, source: 'default' as const } : { value: 'provider default', source: 'provider-default' as const };
     return { id: definition.id, displayName: definition.displayName, command: probe.command, installed: probe.available, version: probe.version ?? 'unavailable', login: { status: environment.length ? 'credential-detected' : 'not-detected', environment }, model, ...(definition.documentationUrl ? { documentationUrl: definition.documentationUrl } : {}), ...(probe.output ? { output: probe.output.slice(0, 240) } : {}) };
@@ -498,6 +518,7 @@ async function main(): Promise<void> {
     const session = sessionId ? sessions.get(sessionId) : sessions.create({ workspaceId, title: flag('--title') ?? prompt.split('\n')[0]!.slice(0, 80), mode });
     if (!session) throw new Error(`Session not found: ${sessionId}`);
     const local = runtime();
+    const taskAgent = agentForRun();
     const task = local.createTask({ workspaceId: session.workspaceId, sessionId: session.id, title: flag('--title') ?? session.title, objective: prompt, mode: session.mode });
     sessions.appendMessage({ sessionId: session.id, role: 'user', content: prompt, taskId: task.id });
     const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
@@ -506,9 +527,10 @@ async function main(): Promise<void> {
       if (event.type === 'task.status_changed' && event.aggregateId === task.id && event.payload.to === 'waiting_approval') process.stderr.write(`\nApproval required: ${event.payload.reason ?? 'the Agent requested approval'}\n`);
     });
     try {
-      const completed = await local.runTask(task.id, agentForRun());
+      const completed = await local.runTask(task.id, taskAgent);
       if (completed.status === 'failed' || completed.status === 'cancelled') process.exitCode = 1;
     } finally {
+      taskAgent.close?.();
       unsubscribe();
       bridge();
       sessionStore.close();
@@ -523,15 +545,19 @@ async function main(): Promise<void> {
     const approvalStore = new SqliteApprovalStore(deviceDatabasePath(dataDir));
     const approvalService = new ApprovalService(approvalStore);
     const local = runtime();
-    const runTask = async (task: import('@agentcorps/domain').Task): Promise<import('@agentcorps/domain').Task> => {
+    const sessionAgents = new Map<string, AgentAdapter>();
+    const runTask = async (task: import('@agentcorps/domain').Task, conversation?: readonly AgentConversationMessage[]): Promise<import('@agentcorps/domain').Task> => {
       const bridge = bridgeRunToSession(local, sessions, task, selectedAgentId());
-      try { return await local.runTask(task.id, agentForRun()); }
+      const agent = sessionAgents.get(task.sessionId) ?? agentForRun();
+      sessionAgents.set(task.sessionId, agent);
+      try { return await local.runTask(task.id, agent, conversation ? { conversation } : {}); }
       finally { bridge(); }
     };
     try {
-      await runTui({ local, sessions, approvals: approvalService, dataDir, agentId: selectedAgentId, runTask });
+      await runTui({ local, sessions, approvals: approvalService, dataDir, ...(flag('--session-id') ? { initialSessionId: flag('--session-id')! } : {}), agentId: selectedAgentId, acpControl: (sessionId) => sessionAgents.get(sessionId)?.control, model: () => flag('--model') ?? runtimeConfig(selectedAgentId()).model ?? agentCorpsConfig().defaults?.model, runTask });
     } finally {
       local.shutdown('TUI exited');
+      for (const agent of sessionAgents.values()) agent.close?.();
       approvalStore.close();
       sessionStore.close();
     }
@@ -862,8 +888,13 @@ async function main(): Promise<void> {
     return;
   }
   if (action === 'run') {
-    const task = await local.runTask(id, agentForRun());
-    console.log(JSON.stringify(task, null, 2));
+    const taskAgent = agentForRun();
+    try {
+      const task = await local.runTask(id, taskAgent);
+      console.log(JSON.stringify(task, null, 2));
+    } finally {
+      taskAgent.close?.();
+    }
     return;
   }
   if (action === 'cancel') {
@@ -881,4 +912,13 @@ async function main(): Promise<void> {
   usage();
 }
 
+function installCliWarningFilter(): void {
+  process.removeAllListeners('warning');
+  process.on('warning', (warning) => {
+    if (warning.name === 'ExperimentalWarning' && /SQLite/.test(warning.message)) return;
+    process.stderr.write(`${warning.stack ?? warning.message}\n`);
+  });
+}
+
+installCliWarningFilter();
 await main();

@@ -67,6 +67,16 @@ describe('A2A client', () => {
   });
 
 
+  it('advertises client capabilities and returns a protocol error for unsupported Agent requests', async () => {
+    const script = "const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize'){if(!m.params.clientCapabilities.fs?.readTextFile || !m.params.clientCapabilities.terminal) process.exit(2); console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); setTimeout(()=>console.log(JSON.stringify({jsonrpc:'2.0',id:7,method:'fs/read_text_file',params:{sessionId:'s',path:'/tmp/a'}})),0);} if(m.id===7 && m.error?.code!==-32601) process.exit(3); if(m.method==='session/new') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'s'}}));});";
+    const client = new AcpStdioClient({ command: process.execPath, args: ['-e', script], clientCapabilities: { fs: { readTextFile: true }, terminal: true } });
+    try {
+      await expect(client.initialize()).resolves.toMatchObject({ protocolVersion: 1 });
+      await expect(client.newSession('/tmp')).resolves.toMatchObject({ sessionId: 's' });
+    } finally {
+      client.close();
+    }
+  });
   it('negotiates ACP over stdio, receives updates, and prompts a session', async () => {
     const updates: unknown[] = [];
     const script = "const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line',l=>{const m=JSON.parse(l); if(m.method==='initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})); if(m.method==='session/new') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'acp-session-1'}})); if(m.method==='session/prompt'){console.log(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{update:'working'}})); console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}}));}});";

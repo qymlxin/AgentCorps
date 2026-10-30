@@ -25,13 +25,15 @@ export class InMemoryDeviceIdentityStore implements DeviceIdentityStore {
 
 interface SqliteStatement { run(...parameters: unknown[]): unknown; all(...parameters: unknown[]): unknown[]; }
 interface SqliteDatabase { exec(sql: string): void; prepare(sql: string): SqliteStatement; close(): void; }
-const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+function databaseSync(): new (filePath: string) => SqliteDatabase {
+  return (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+}
 
 export class SqliteDeviceIdentityStore implements DeviceIdentityStore {
   private readonly db: SqliteDatabase;
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
-    this.db = new DatabaseSync(filePath);
+    this.db = new (databaseSync())(filePath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec('CREATE TABLE IF NOT EXISTS device_identities (id TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT)');
   }

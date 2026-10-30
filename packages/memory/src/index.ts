@@ -64,14 +64,16 @@ interface SqliteDatabase {
   close(): void;
 }
 
-const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+function databaseSync(): new (filePath: string) => SqliteDatabase {
+  return (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+}
 
 export class SqliteMemoryStore implements MemoryStore {
   private readonly db: SqliteDatabase;
 
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
-    this.db = new DatabaseSync(filePath);
+    this.db = new (databaseSync())(filePath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (

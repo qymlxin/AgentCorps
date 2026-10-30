@@ -86,7 +86,9 @@ interface SqliteDatabase {
   close(): void;
 }
 
-const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+function databaseSync(): new (filePath: string) => SqliteDatabase {
+  return (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+}
 
 export class SqliteEventStore implements EventStore {
   private readonly db: SqliteDatabase;
@@ -94,7 +96,7 @@ export class SqliteEventStore implements EventStore {
 
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
-    this.db = new DatabaseSync(filePath);
+    this.db = new (databaseSync())(filePath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS events (
@@ -161,12 +163,21 @@ export interface AgentProtocolEvent {
   readonly direction: ProtocolDirection;
   readonly method: string;
   readonly metadata?: Readonly<Record<string, string | number | boolean>>;
+  /** Structured protocol payload retained for projections without exposing prompt text in metadata. */
+  readonly data?: unknown;
+}
+
+export interface AgentConversationMessage {
+  readonly role: 'user' | 'agent' | 'system' | 'tool';
+  readonly content: string;
 }
 
 export interface AgentRequest {
   readonly task: Task;
   readonly runId: RunId;
   readonly signal: AbortSignal;
+  /** Earlier messages from the same interactive session, excluding the current objective. */
+  readonly conversation?: readonly AgentConversationMessage[];
   readonly memory?: readonly MemoryRecord[];
   readonly emit: (text: string, stream?: 'stdout' | 'stderr' | 'assistant') => void;
   readonly emitProtocol?: (event: AgentProtocolEvent) => void;
@@ -176,9 +187,22 @@ export interface AgentRequest {
   readonly usageSpan?: UsageSpan;
 }
 
+export interface AgentControl {
+  /** Identifies the protocol exposed by this optional control surface. */
+  readonly protocol?: 'acp';
+  readonly setMode?: (sessionId: string, modeId: string) => Promise<unknown>;
+  readonly setConfigOption?: (sessionId: string, configId: string, value: string) => Promise<unknown>;
+  /** Loads an ACP session into the AgentCorps session. The second ID is optional for adapters that use one ID space. */
+  readonly loadSession?: (sessionId: string, remoteSessionId?: string) => Promise<unknown>;
+  readonly closeSession?: (sessionId: string) => Promise<unknown>;
+}
+
 export interface AgentAdapter {
   readonly descriptor: AgentDescriptor;
+  readonly control?: AgentControl;
   execute(request: AgentRequest): Promise<void>;
+  /** Releases long-lived child processes used by protocol adapters. */
+  close?(): void;
 }
 
 export interface PolicyDecision {
@@ -310,7 +334,7 @@ export class TaskRuntime {
     return [...this.tasks.values()];
   }
 
-  async runTask(taskId: TaskId, agent: AgentAdapter): Promise<Task> {
+  async runTask(taskId: TaskId, agent: AgentAdapter, context: Pick<AgentRequest, 'conversation'> = {}): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (this.activeRuns.has(taskId)) throw new Error(`Task is already running: ${taskId}`);
@@ -327,19 +351,20 @@ export class TaskRuntime {
     usageSpan?.inputText(task.objective);
     const usage = this.usage?.forRun(task.id, runId);
     try {
-      await agent.execute({ task: this.tasks.get(taskId)!, runId, signal: controller.signal, ...(contextMemory.length ? { memory: contextMemory } : {}), ...(usage ? { usage } : {}), ...(usageSpan ? { usageSpan } : {}), emit: (text, stream = 'assistant') => {
+      await agent.execute({ task: this.tasks.get(taskId)!, runId, signal: controller.signal, ...(context.conversation?.length ? { conversation: context.conversation } : {}), ...(contextMemory.length ? { memory: contextMemory } : {}), ...(usage ? { usage } : {}), ...(usageSpan ? { usageSpan } : {}), emit: (text, stream = 'assistant') => {
         usageSpan?.outputText(text);
         this.store.append(this.event('run.output', task.id, { runId, text, stream }));
       }, emitProtocol: (protocolEvent) => {
         this.store.append(this.event('run.protocol', task.id, { runId, ...protocolEvent }));
       }});
-      if (this.tasks.get(taskId)?.status !== 'cancelled') {
-        this.changeStatus(this.tasks.get(taskId)!, 'succeeded');
+      const current = this.tasks.get(taskId);
+      if (current?.status !== 'cancelled' && current?.status !== 'paused') {
+        this.changeStatus(current!, 'succeeded');
         usageSpan?.finish('succeeded');
       } else usageSpan?.finish('cancelled');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (this.tasks.get(taskId)?.status !== 'cancelled') {
+      if (this.tasks.get(taskId)?.status !== 'cancelled' && this.tasks.get(taskId)?.status !== 'paused') {
         if (error instanceof ApprovalRequiredError) {
           this.changeStatus(this.tasks.get(taskId)!, 'waiting_approval', message);
           usageSpan?.finish('approval_required', message);
@@ -361,6 +386,24 @@ export class TaskRuntime {
       this.activeRuns.get(taskId)?.abort(reason);
       this.changeStatus(task, 'cancelled', reason);
     }
+    return this.tasks.get(taskId)!;
+  }
+
+  pauseTask(taskId: TaskId, reason = 'Paused by user'): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status === 'queued' || task.status === 'running' || task.status === 'waiting_approval') {
+      this.activeRuns.get(taskId)?.abort(reason);
+      this.changeStatus(task, 'paused', reason);
+    }
+    return this.tasks.get(taskId)!;
+  }
+
+  resumeTask(taskId: TaskId): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status !== 'paused') throw new Error(`Only paused tasks can be resumed: ${task.status}`);
+    this.changeStatus(task, 'queued', 'Resume requested');
     return this.tasks.get(taskId)!;
   }
 

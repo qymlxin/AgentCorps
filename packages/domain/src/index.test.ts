@@ -4,7 +4,8 @@ import { assertTransition, canTransition, createTask, type TaskId } from './inde
 describe('task lifecycle', () => {
   it('allows the expected execution path', () => {
     expect(canTransition('queued', 'running')).toBe(true);
-    expect(canTransition('running', 'succeeded')).toBe(true);
+    expect(canTransition('running', 'paused')).toBe(true);
+    expect(canTransition('paused', 'queued')).toBe(true);
     expect(canTransition('succeeded', 'running')).toBe(false);
   });
 

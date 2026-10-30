@@ -25,6 +25,27 @@ describe('TaskRuntime', () => {
     expect(runtime.getTask(task.id)?.status).toBe('succeeded');
   });
 
+  it('pauses a running task and resumes it from the queued state', async () => {
+    let release: (() => void) | undefined;
+    const runtime = new TaskRuntime({ id: (prefix) => `${prefix}-pause`, now: () => '2026-10-24T00:00:00.000Z' });
+    const task = runtime.createTask({ workspaceId: 'ws', sessionId: 's', title: 'Pause', objective: 'pause safely', mode: 'code' });
+    const running = runtime.runTask(task.id, {
+      descriptor: { id: 'pause-agent', displayName: 'Pause Agent', version: '1', transport: 'mock', capabilities: [] },
+      async execute() { await new Promise<void>((resolve) => { release = resolve; }); },
+    });
+    await Promise.resolve();
+    expect(runtime.pauseTask(task.id).status).toBe('paused');
+    release?.();
+    expect((await running).status).toBe('paused');
+    const queued = runtime.resumeTask(task.id);
+    expect(queued.status).toBe('queued');
+    const completed = await runtime.runTask(task.id, {
+      descriptor: { id: 'resume-agent', displayName: 'Resume Agent', version: '1', transport: 'mock', capabilities: [] },
+      async execute(request) { request.emit('resumed'); },
+    });
+    expect(completed.status).toBe('succeeded');
+  });
+
   it('moves a task to waiting_approval for a guarded tool execution', async () => {
     const runtime = new TaskRuntime({ id: (prefix) => `${prefix}-approval`, now: () => '2026-10-24T00:00:00.000Z' });
     const task = runtime.createTask({ workspaceId: 'ws', sessionId: 's', title: 'Approval', objective: 'run guarded tool', mode: 'code' });

@@ -4,6 +4,7 @@ export type TaskStatus =
   | 'queued'
   | 'running'
   | 'waiting_approval'
+  | 'paused'
   | 'succeeded'
   | 'failed'
   | 'cancelled';
@@ -80,6 +81,8 @@ export interface RunProtocolPayload {
   readonly direction: ProtocolDirection;
   readonly method: string;
   readonly metadata?: Readonly<Record<string, string | number | boolean>>;
+  /** Structured protocol payload retained for state projections and raw inspection. */
+  readonly data?: unknown;
 }
 
 export interface TaskStatusChangedPayload {
@@ -105,9 +108,10 @@ export interface CreateTaskInput {
 }
 
 const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
-  queued: ['running', 'cancelled'],
-  running: ['waiting_approval', 'succeeded', 'failed', 'cancelled'],
-  waiting_approval: ['running', 'cancelled', 'failed'],
+  queued: ['running', 'cancelled', 'paused'],
+  running: ['waiting_approval', 'paused', 'succeeded', 'failed', 'cancelled'],
+  waiting_approval: ['running', 'paused', 'cancelled', 'failed'],
+  paused: ['queued', 'cancelled'],
   succeeded: [],
   failed: ['queued', 'cancelled'],
   cancelled: ['queued'],

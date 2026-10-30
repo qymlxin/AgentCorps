@@ -24,9 +24,29 @@ agentcorps task run TASK_ID --agent codex --model YOUR_MODEL --role developer
 agentcorps agents --agents-config /absolute/path/tools.json
 ```
 
-自定义配置仅在显式传入 `--agents-config` 后加载（最多 1 MiB）；格式为 `{"version":1,"tools":[...]}`。工具项包含 `id`、`displayName`、`command`、字符串数组 `args`、`outputFormat`（`text`/`jsonl`），可选 `promptPlacement`（`argument`/`stdin`）、`promptFlag`、`modelFlag`、`versionArgs`、`documentationUrl` 和 `defaultRole`。`promptFlag` 会紧挨提示词插入；`modelFlag` 在选择 `--model` 时使用。配置定义可执行程序，属于可信的本地管理员配置，不能接受模型输出或远端请求上传的定义。不会自动安装工具、修改厂商全局配置、执行 shell 字符串，重复 ID 和未知字段会被拒绝。
+自定义配置仅在显式传入 `--agents-config` 后加载（最多 1 MiB）；格式为 `{"version":1,"tools":[...]}`。工具项包含 `id`、`displayName`、`command`、字符串数组 `args`、`outputFormat`（`text`/`jsonl`），可选 `transport`（`command`/`acp`）、`promptPlacement`（`argument`/`stdin`）、`promptFlag`、`modelFlag`、`versionArgs`、`documentationUrl` 和 `defaultRole`。`transport: "acp"` 会让 AgentCorps 以 ACP Client 启动该进程，完成 `initialize`、`session/new`、`session/prompt` 和 `session/cancel`，而不是把 prompt 拼接成普通命令行参数。ACP 工具不使用 `outputProtocol`、`promptPlacement`、`promptFlag` 或 `modelFlag`；`args` 只用于启动 ACP Agent 本身。`promptFlag` 会紧挨提示词插入；`modelFlag` 在选择 `--model` 时使用。配置定义可执行程序，属于可信的本地管理员配置，不能接受模型输出或远端请求上传的定义。不会自动安装工具、修改厂商全局配置、执行 shell 字符串，重复 ID 和未知字段会被拒绝。
 
-`outputProtocol` 可选，指定已注册的 JSONL 解码器：`kimi-messages`、`qwen-messages`、`zcode-result`、`opencode-events`、`gemini-events`。它只能与 `outputFormat: "jsonl"` 一起使用；未知协议会拒绝加载。未指定时使用兼容性的通用 JSON 文本提取，不应假定它适用于任意厂商格式。
+`--acp-config` 还可以直接读取 JetBrains 风格的 `{ "agent_servers": { ... } }` 文件；支持每个 server 的 `command`、`args` 和 `env`，并接受 JetBrains 配置中的 `default_mcp_settings` 元数据。server 名称会转换为小写短 ID，例如 `External ACP Agent` 对应 `external-acp-agent`。环境变量只用于启动对应的 ACP Agent，不会出现在 `agentcorps agents` 的列表输出中：
+
+```json
+{
+  "default_mcp_settings": { "use_custom_mcp": true },
+  "agent_servers": {
+    "External ACP Agent": {
+      "command": "/absolute/path/node",
+      "args": ["/absolute/path/external-agent.js"],
+      "env": { "AGENT_API_KEY": "configured-locally" }
+    }
+  }
+}
+```
+
+```bash
+agentcorps agents --acp-config /absolute/path/acp.json
+agentcorps task run TASK_ID --acp-config /absolute/path/acp.json --agent external-acp-agent
+```
+
+`kimi-messages`、`qwen-messages`、`zcode-result`、`opencode-events`、`gemini-events`。它只能与 `outputFormat: "jsonl"` 一起使用；未知协议会拒绝加载。未指定时使用兼容性的通用 JSON 文本提取，不应假定它适用于任意厂商格式。
 
 例如，接入一个按 stdin 接收提示词、输出纯文本的本地工具，无需改动源码：
 
@@ -49,7 +69,32 @@ agentcorps agents --agents-config /absolute/path/tools.json
 agentcorps task run TASK_ID --agents-config /absolute/path/tools.json --agent local-coder --role tester
 ```
 
-配置中的参数须以目标工具实际支持的接口为准。新增输出协议时，在可信源码中调用 `registry.registerDecoder(id, factory)`，然后注册声明该 `outputProtocol` 的工具。factory 每次执行创建独立解码状态；解码器返回 `{ text, stream? }`、`{ error }` 或 `{}`（忽略事件）。这允许处理终结结果去重和厂商错误，但不允许 JSON 配置动态加载任意 JavaScript。新增内置工具应独立放入 `src/providers/`，注册后复用同一套 CLI 路径，并添加真实子进程 fixture 测试。
+ACP Agent 配置示例。这里的 `command` 和 `args` 是 JetBrains ACP 配置中的 Agent 进程启动命令；AgentCorps 会负责 ACP 握手和会话，而不是把任务文本追加到命令行：
+
+```json
+{
+  "version": 1,
+  "tools": [{
+    "id": "external-acp-agent",
+    "displayName": "External ACP Agent",
+    "command": "/absolute/path/node",
+    "args": ["/absolute/path/external-agent.js"],
+    "transport": "acp",
+    "outputFormat": "text"
+  }]
+}
+```
+
+```bash
+agentcorps task run TASK_ID \
+  --agents-config /absolute/path/tools.json \
+  --agent external-acp-agent
+```
+
+`session/new` 使用任务的工作目录，ACP `session/update` 中的文本增量会转为 AgentCorps 的 `run.output` 事件；同一个 AgentCorps Session 会复用对应的 ACP Session。对于声明宿主能力的 ACP Agent，AgentCorps 还会声明并处理 `fs/read_text_file`、`fs/write_text_file`、`terminal/create`、`terminal/output`、`terminal/wait_for_exit`、`terminal/kill`、`terminal/release` 和 `session/request_permission`。这些请求由 `AcpHost` 先交给 `PolicyEngine`（安全策略引擎）和 `ApprovalService`（审批服务），再执行文件或进程操作；文件必须位于工作区，终端 cwd（工作目录）必须位于工作区，终端环境不会继承 AgentCorps 的凭据变量。待审批请求会在 TUI 的审批面板出现，支持 `/approve ID`、`/deny ID`、`a`、`d` 和 `Ctrl+O`。
+
+ACP `session/update` 的结构化 payload（结构化负载）会保存在 `run.protocol` 事件中。TUI 会投影文本增量、tool call（工具调用）生命周期、plan（计划）、current mode（当前模式）、config option（配置选项）、usage（用量）、terminal output（终端输出）和 permission 状态；`Ctrl+V` 或 `/raw` 可查看原始事件。`AcpAgentAdapter` 还通过可选的 `AgentControl` 接口暴露 `setMode`、`setConfigOption`、`loadSession` 和 `closeSession`；`withRole` 与 CLI 审批包装器会透传该接口，因此 TUI 控制命令不是只读投影，而是实际发送 ACP JSON-RPC 请求。
+
 
 `--agent-command` 覆盖可执行文件，重复的 `--agent-arg` 完整替换默认参数（此时调用方负责把消费提示词的选项放在参数末尾）。`--agent-arg` 的值是原样传给厂商工具的单个参数，即使值是 `--model` 或 `--role`，也不会被 AgentCorps 当成自己的选项读取。角色提示仍生效。沙箱参数适用于注册表中的工具和自定义命令，但当前沙箱执行器不支持 stdin 提示词；该组合会明确拒绝，而不是静默丢失输入。模型与凭据仍需在各工具的官方配置中设置。
 

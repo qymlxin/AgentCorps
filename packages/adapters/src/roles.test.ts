@@ -25,9 +25,11 @@ describe('portable role prompts', () => {
 
   it.each(['mock', 'stdio-jsonl', 'acp', 'a2a'] as const)('wraps %s without mutating the task or granting permissions', async (transport) => {
     const execute = vi.fn(async () => undefined);
-    const adapter: AgentAdapter = { descriptor: { id: 'fixture', displayName: 'Fixture', version: '1', transport, capabilities: [] }, execute };
+    const control = { protocol: 'acp' as const, setMode: vi.fn(async () => undefined) };
+    const adapter: AgentAdapter = { descriptor: { id: 'fixture', displayName: 'Fixture', version: '1', transport, capabilities: [] }, control, execute };
     const original = request();
     const wrapped = withRole(adapter, { role: getRolePreset('tester'), instructions: 'No network' });
+    expect(wrapped.control).toBe(control);
     await wrapped.execute(original);
     expect(wrapped.descriptor).toBe(adapter.descriptor);
     expect(original.task.objective).toBe('Check the patch');

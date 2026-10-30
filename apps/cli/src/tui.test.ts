@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deleteInputCharacter, insertInputCharacter, moveInputHistory, sanitizeTerminalText, wrapLine, type TuiInputState } from './tui.js';
+import { deleteInputCharacter, insertInputCharacter, moveInputHistory, sanitizeTerminalText, wrapLine, commandSuggestions, type TuiInputState } from './tui.js';
 
 function inputState(overrides: Partial<TuiInputState> = {}): TuiInputState {
   return { input: '', cursor: 0, history: [], historyIndex: -1, ...overrides };
@@ -24,6 +24,12 @@ describe('TUI helpers', () => {
     expect(state).toMatchObject({ input: 'ac', cursor: 1 });
   });
 
+  it('suggests slash commands and filters partial commands', () => {
+    expect(commandSuggestions('/')).toEqual(expect.arrayContaining([expect.objectContaining({ command: '/help' }), expect.objectContaining({ command: '/history' })]));
+    expect(commandSuggestions('/mode').map((item) => item.command)).toEqual(['/mode MODE_ID']);
+    expect(commandSuggestions('/his').map((item) => item.command)).toEqual(['/history']);
+    expect(commandSuggestions('/approve ')).toEqual([]);
+  });
   it('navigates command history in both directions and restores a blank draft', () => {
     const state = inputState({ history: ['first', 'second'] });
     moveInputHistory(state, -1);

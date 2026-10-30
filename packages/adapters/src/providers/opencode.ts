@@ -16,7 +16,7 @@ export const createOpenCodeDecoder = (): AgentOutputDecoder => (value) => {
 export function registerOpenCode(registry: AgentToolRegistry): void {
   registry.registerDecoder('opencode-events', createOpenCodeDecoder).register({
     id: 'opencode', displayName: 'OpenCode', command: 'opencode', args: ['run', '--format', 'json'],
-    modelFlag: '--model', outputFormat: 'jsonl', outputProtocol: 'opencode-events', defaultRole: 'developer',
+    promptFlag: '--', modelFlag: '--model', outputFormat: 'jsonl', outputProtocol: 'opencode-events', defaultRole: 'developer',
     documentationUrl: 'https://opencode.ai/docs/cli/',
   });
 }

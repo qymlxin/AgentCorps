@@ -3,7 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "agentcorps": "dist/index.js" },
-  "dependencies": { "@agentcorps/runtime": "workspace:*", "@agentcorps/domain": "workspace:*", "@agentcorps/gateway": "workspace:*", "@agentcorps/channels": "workspace:*", "@agentcorps/adapters": "workspace:*", "@agentcorps/memory": "workspace:*", "@agentcorps/session": "workspace:*", "@agentcorps/security": "workspace:*" },
-  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run", "dev": "tsx src/index.ts" }
+  "bin": {
+    "agentcorps": "dist/index.js"
+  },
+  "dependencies": {
+    "@agentcorps/adapters": "workspace:*",
+    "@agentcorps/channels": "workspace:*",
+    "@agentcorps/domain": "workspace:*",
+    "@agentcorps/gateway": "workspace:*",
+    "@agentcorps/memory": "workspace:*",
+    "@agentcorps/protocols": "workspace:*",
+    "@agentcorps/runtime": "workspace:*",
+    "@agentcorps/security": "workspace:*",
+    "@agentcorps/session": "workspace:*",
+    "ink": "^8.0.0",
+    "react": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsx src/index.ts"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "^4.0.0"
+  }
 }

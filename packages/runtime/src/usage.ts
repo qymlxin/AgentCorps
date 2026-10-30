@@ -165,13 +165,15 @@ export class InMemoryUsageStore implements UsageStore {
 
 interface SqliteStatement { run(...parameters: unknown[]): unknown; all(...parameters: unknown[]): unknown[]; }
 interface SqliteDatabase { exec(sql: string): void; prepare(sql: string): SqliteStatement; close(): void; }
-const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+function databaseSync(): new (filePath: string) => SqliteDatabase {
+  return (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+}
 
 export class SqliteUsageStore implements UsageStore {
   private readonly db: SqliteDatabase;
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
-    this.db = new DatabaseSync(filePath);
+    this.db = new (databaseSync())(filePath);
     this.db.exec(`CREATE TABLE IF NOT EXISTS usage_records (
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, task_id TEXT NOT NULL, run_id TEXT NOT NULL, tool_id TEXT NOT NULL,
       model TEXT, operation TEXT, status TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL,

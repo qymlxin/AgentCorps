@@ -1,3 +1,5 @@
+export * from './acp.js';
+
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 export interface A2AAgentCard {
@@ -216,6 +218,16 @@ export interface AcpPromptResult {
   readonly [key: string]: unknown;
 }
 
+export interface AcpClientCapabilities {
+  readonly auth?: { readonly terminal?: boolean };
+  readonly fs?: { readonly readTextFile?: boolean; readonly writeTextFile?: boolean };
+  readonly terminal?: boolean;
+  readonly session?: { readonly notices?: Record<string, never>; readonly compaction?: Record<string, never> };
+  readonly [key: string]: unknown;
+}
+
+export type AcpRequestHandler = (method: string, params: unknown) => unknown | Promise<unknown>;
+
 export interface AcpClientOptions {
   readonly command: string;
   readonly args?: readonly string[];
@@ -224,15 +236,18 @@ export interface AcpClientOptions {
   readonly timeoutMs?: number;
   readonly clientName?: string;
   readonly clientVersion?: string;
+  readonly clientCapabilities?: AcpClientCapabilities;
   readonly onUpdate?: (params: unknown) => void;
-  readonly onRequest?: (method: string, params: unknown) => unknown | Promise<unknown>;
+  readonly onNotification?: (method: string, params: unknown) => void;
+  readonly onRequest?: AcpRequestHandler;
+  readonly onClose?: (error: Error) => void;
   readonly requiredProtocolVersion?: number;
   readonly requiredCapabilities?: readonly string[];
 }
 
 interface AcpRpcMessage {
   readonly jsonrpc: '2.0';
-  readonly id?: number;
+  readonly id?: number | string;
   readonly method?: string;
   readonly params?: unknown;
   readonly result?: unknown;
@@ -241,25 +256,28 @@ interface AcpRpcMessage {
 
 export class AcpStdioClient {
   private readonly options: AcpClientOptions;
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; cleanup?: () => void }>();
+  private readonly pending = new Map<number | string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; cleanup?: () => void }>();
   private process: ChildProcessWithoutNullStreams | undefined;
   private nextId = 1;
   private initialized = false;
+  private initializeResult: AcpInitializeResult | undefined;
 
   constructor(options: AcpClientOptions) {
     this.options = options;
   }
 
   async initialize(): Promise<AcpInitializeResult> {
+    if (this.initialized && this.initializeResult) return this.initializeResult;
     this.ensureProcess();
     const result = await this.request('initialize', {
       protocolVersion: 1,
-      clientCapabilities: {},
+      clientCapabilities: this.options.clientCapabilities ?? {},
       clientInfo: { name: this.options.clientName ?? 'AgentCorps', version: this.options.clientVersion ?? '0.1.0' },
     }) as AcpInitializeResult;
     if (this.options.requiredProtocolVersion !== undefined && result.protocolVersion !== this.options.requiredProtocolVersion) throw new Error(`ACP protocol version ${result.protocolVersion} does not satisfy required version ${this.options.requiredProtocolVersion}`);
     for (const capability of this.options.requiredCapabilities ?? []) if (!result.agentCapabilities?.[capability]) throw new Error(`ACP agent does not advertise capability: ${capability}`);
     this.initialized = true;
+    this.initializeResult = result;
     return result;
   }
 
@@ -275,6 +293,40 @@ export class AcpStdioClient {
     return await this.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }, signal, () => this.cancel(sessionId)) as AcpPromptResult;
   }
 
+  /** Sends an optional ACP method while preserving the same timeout and JSON-RPC routing. */
+  async requestMethod<T = unknown>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
+    if (!this.initialized && method !== 'initialize') throw new Error('ACP client is not initialized');
+    return await this.request(method, params, signal) as T;
+  }
+
+  async loadSession(sessionId: string, mcpServers: readonly unknown[] = []): Promise<unknown> {
+    return await this.requestMethod('session/load', { sessionId, mcpServers });
+  }
+
+  async listSessions(cwd?: string): Promise<unknown> {
+    return await this.requestMethod('session/list', cwd ? { cwd } : {});
+  }
+
+  async forkSession(sessionId: string, cwd?: string): Promise<unknown> {
+    return await this.requestMethod('session/fork', { sessionId, ...(cwd ? { cwd } : {}) });
+  }
+
+  async resumeSession(sessionId: string): Promise<unknown> {
+    return await this.requestMethod('session/resume', { sessionId });
+  }
+
+  async setMode(sessionId: string, modeId: string): Promise<unknown> {
+    return await this.requestMethod('session/set_mode', { sessionId, modeId });
+  }
+
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<unknown> {
+    return await this.requestMethod('session/set_config_option', { sessionId, configId, value });
+  }
+
+  async closeSession(sessionId: string): Promise<unknown> {
+    return await this.requestMethod('session/close', { sessionId });
+  }
+
   cancel(sessionId: string): void {
     if (!sessionId.trim()) throw new Error('ACP cancellation requires sessionId');
     this.send({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } });
@@ -285,15 +337,29 @@ export class AcpStdioClient {
     this.process?.kill('SIGTERM');
     this.process = undefined;
     this.initialized = false;
+    this.initializeResult = undefined;
   }
 
   private ensureProcess(): void {
     if (this.process) return;
-    this.process = spawn(this.options.command, [...(this.options.args ?? [])], { cwd: this.options.cwd, env: { ...process.env, ...this.options.env }, stdio: ['pipe', 'pipe', 'pipe'] });
-    const lines = createInterface({ input: this.process.stdout, crlfDelay: Infinity });
+    const child = spawn(this.options.command, [...(this.options.args ?? [])], { cwd: this.options.cwd, env: { ...process.env, ...this.options.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.process = child;
+    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     lines.on('line', (line) => this.handleLine(line));
-    this.process.on('error', (error) => this.rejectPending(error));
-    this.process.on('close', (code, signal) => this.rejectPending(new Error(`ACP agent exited (code=${code ?? 'null'}, signal=${signal ?? 'none'})`)));
+    child.on('error', (error) => {
+      this.options.onClose?.(error);
+      this.rejectPending(error);
+    });
+    child.on('close', (code, signal) => {
+      const error = new Error(`ACP agent exited (code=${code ?? 'null'}, signal=${signal ?? 'none'})`);
+      if (this.process === child) {
+        this.process = undefined;
+        this.initialized = false;
+        this.initializeResult = undefined;
+      }
+      this.options.onClose?.(error);
+      this.rejectPending(error);
+    });
   }
 
   private request(method: string, params: unknown, signal?: AbortSignal, onAbort?: () => void): Promise<unknown> {
@@ -338,9 +404,32 @@ export class AcpStdioClient {
       this.options.onUpdate?.(message.params);
       return;
     }
-    if (message.method && message.id !== undefined && this.options.onRequest) {
+    if (message.method && message.id === undefined) {
+      this.options.onNotification?.(message.method, message.params);
+      return;
+    }
+    if (message.method && message.id !== undefined) {
       const requestId = message.id;
-      Promise.resolve(this.options.onRequest(message.method, message.params)).then((result) => this.send({ jsonrpc: '2.0', id: requestId, result })).catch((error: unknown) => this.send({ jsonrpc: '2.0', id: requestId, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }));
+      const handler = this.options.onRequest;
+      const result = handler
+        ? Promise.resolve(handler(message.method, message.params))
+        : Promise.reject(new Error(`ACP client method not supported: ${message.method}`));
+      result
+        .then((value) => {
+          try { this.send({ jsonrpc: '2.0', id: requestId, result: value }); } catch { /* The Agent exited while handling its request. */ }
+        })
+        .catch((error: unknown) => {
+          try {
+            this.send({
+              jsonrpc: '2.0',
+              id: requestId,
+              error: {
+                code: handler ? -32000 : -32601,
+                message: error instanceof Error ? error.message : String(error),
+              },
+            });
+          } catch { /* The Agent exited while handling its request. */ }
+        });
     }
   }
 

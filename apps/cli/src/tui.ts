@@ -1,21 +1,72 @@
 import { createInterface } from 'node:readline';
 import type { ApprovalService } from '@agentcorps/security';
 import type { Task, TaskEvent, TaskId, TaskStatus } from '@agentcorps/domain';
-import type { TaskRuntime } from '@agentcorps/runtime';
+import type { AgentConversationMessage, AgentControl, TaskRuntime } from '@agentcorps/runtime';
 import type { SessionService } from '@agentcorps/session';
+import { runInkTui } from './tui-ink.js';
+import { formatAgentOutput, formatProtocolEvent } from './tui-format.js';
 
 export interface TuiOptions {
   readonly local: TaskRuntime;
   readonly sessions: SessionService;
   readonly approvals: ApprovalService;
   readonly dataDir: string;
+  readonly initialSessionId?: string;
   readonly agentId: () => string;
-  readonly runTask: (task: Task) => Promise<Task>;
+  readonly model?: () => string | undefined;
+  readonly acpControl?: (sessionId: string) => AgentControl | undefined;
+  readonly runTask: (task: Task, conversation?: readonly AgentConversationMessage[]) => Promise<Task>;
 }
 
 const ESC = '\u001b[';
 const terminalStatuses: readonly TaskStatus[] = ['succeeded', 'failed', 'cancelled'];
 const activeStatuses: readonly TaskStatus[] = ['queued', 'running', 'waiting_approval'];
+export interface TuiCommandSuggestion {
+  readonly command: string;
+  readonly description: string;
+  readonly completion: string;
+}
+
+const tuiCommands: readonly TuiCommandSuggestion[] = [
+  { command: '/help', description: '显示快捷键和命令帮助', completion: '/help' },
+  { command: '/new', description: '开始新的会话', completion: '/new' },
+  { command: '/tasks', description: '列出当前会话的任务', completion: '/tasks' },
+  { command: '/status', description: '显示会话和任务状态', completion: '/status' },
+  { command: '/history', description: '查看当前会话消息', completion: '/history' },
+  { command: '/approvals', description: '列出待处理审批', completion: '/approvals' },
+  { command: '/approve ID', description: '批准一个审批请求', completion: '/approve ' },
+  { command: '/deny ID', description: '拒绝一个审批请求', completion: '/deny ' },
+  { command: '/pause', description: '暂停当前任务', completion: '/pause' },
+  { command: '/resume TASK_ID', description: '恢复暂停或等待中的任务', completion: '/resume ' },
+  { command: '/retry [TASK_ID]', description: '重试失败或取消的任务', completion: '/retry ' },
+  { command: '/switch TASK_ID', description: '切换到另一个任务会话', completion: '/switch ' },
+  { command: '/mode MODE_ID', description: '切换当前 ACP session 模式', completion: '/mode ' },
+  { command: '/config ID VALUE', description: '设置当前 ACP session 配置项', completion: '/config ' },
+  { command: '/session-load SESSION_ID', description: '加载并恢复 ACP session', completion: '/session-load ' },
+  { command: '/session-close', description: '关闭当前 ACP session', completion: '/session-close' },
+  { command: '/cancel', description: '取消当前任务', completion: '/cancel' },
+  { command: '/raw', description: '切换原始事件显示', completion: '/raw' },
+  { command: '/quit', description: '退出 TUI', completion: '/quit' },
+];
+
+export function commandSuggestions(value: string): readonly TuiCommandSuggestion[] {
+  const query = value.trimStart().toLowerCase();
+  if (!query.startsWith('/') || /\s/.test(query)) return [];
+  return tuiCommands.filter((entry) => entry.command.toLowerCase().startsWith(query)).slice(0, 8);
+}
+
+export function resolveInitialSessionId(sessions: SessionService, requested?: string): string | undefined {
+  if (requested) return sessions.get(requested) ? requested : undefined;
+  const list = (sessions as SessionService & { list?: () => readonly { readonly id: string }[] }).list;
+  return typeof list === 'function' ? list.call(sessions).at(-1)?.id : undefined;
+}
+
+function conversationForTask(sessions: SessionService, task: Task): readonly AgentConversationMessage[] {
+  return sessions.messages(task.sessionId)
+    .filter((message) => message.taskId !== task.id)
+    .slice(-24)
+    .map((message) => ({ role: message.role, content: message.content }));
+}
 
 function appendText(lines: string[], text: string, prefix = ''): void {
   const clean = sanitizeTerminalText(text);
@@ -66,11 +117,20 @@ function statusIcon(status: TaskStatus): string {
   return '·';
 }
 
-async function runLineTui({ local, sessions, approvals, dataDir, agentId, runTask }: TuiOptions): Promise<void> {
-  const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY === true });
-  let sessionId: string | undefined;
+async function runLineTui({ local, sessions, approvals, dataDir, initialSessionId: configuredSessionId, agentId, runTask, acpControl }: TuiOptions): Promise<void> {
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: process.stdin.isTTY === true,
+    completer: (line: string) => {
+      const suggestions = commandSuggestions(line);
+      return [suggestions.map((suggestion) => suggestion.completion), line];
+    },
+  });
+  const requestedSessionMissing = Boolean(configuredSessionId && !sessions.get(configuredSessionId));
+  let sessionId: string | undefined = resolveInitialSessionId(sessions, configuredSessionId);
   const ask = (question: string): Promise<string> => new Promise((resolve) => readline.question(question, resolve));
-  const printHelp = (): void => console.log('Commands: /help, /new, /tasks, /status, /history, /approvals, /approve ID, /deny ID, /resume TASK_ID, /cancel, /quit. Enter a prompt to run the configured Agent.');
+  const printHelp = (): void => console.log('Commands: /help, /new, /tasks, /status, /history, /approvals, /approve ID, /deny ID, /mode MODE_ID, /config ID VALUE, /session-load ACP_SESSION_ID, /session-close, /pause, /resume TASK_ID, /retry [TASK_ID], /cancel, /quit. Enter a prompt to run the configured Agent.');
   const printTasks = (): void => {
     const tasks = local.listTasks().filter((task) => !sessionId || task.sessionId === sessionId);
     if (!tasks.length) { console.log('No tasks in the current session.'); return; }
@@ -79,11 +139,14 @@ async function runLineTui({ local, sessions, approvals, dataDir, agentId, runTas
   const execute = async (task: Task): Promise<void> => {
     const unsubscribe = local.store.subscribe((event) => {
       if (event.aggregateId !== task.id) return;
-      if (event.type === 'run.output') process.stdout.write(event.payload.text.endsWith('\n') ? event.payload.text : `${event.payload.text}\n`);
-      if (event.type === 'task.status_changed') console.log(`\n[${event.payload.to}]`);
+      if (event.type === 'run.output') {
+        for (const line of formatAgentOutput(event.payload.text, event.payload.stream)) console.log(line.text);
+      }
+      if (event.type === 'run.protocol') console.log(formatProtocolEvent(event).text);
+      if (event.type === 'task.status_changed') console.log(`\n[${event.payload.to}]${event.payload.reason ? ` ${event.payload.reason}` : ''}`);
     });
     try {
-      const completed = await runTask(task);
+      const completed = await runTask(task, conversationForTask(sessions, task));
       if (completed.status === 'failed') console.error('Run failed. Use /history or task show to inspect the recorded events.');
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
@@ -93,6 +156,7 @@ async function runLineTui({ local, sessions, approvals, dataDir, agentId, runTas
   };
   console.log('AgentCorps TUI · interactive local Agent session');
   console.log(`Data: ${dataDir}`);
+  if (requestedSessionMissing) console.log(`Session not found: ${configuredSessionId}. Starting without a session; enter a prompt to create one.`);
   printHelp();
   try {
     while (true) {
@@ -135,9 +199,53 @@ async function runLineTui({ local, sessions, approvals, dataDir, agentId, runTas
         const task = local.getTask(resumeCommand[1] as TaskId);
         if (!task) { console.log(`Task not found: ${resumeCommand[1]}`); continue; }
         if (task.status === 'running') { console.log(`Task is already running: ${task.id}`); continue; }
-        if (!['queued', 'waiting_approval'].includes(task.status)) { console.log(`Task is ${task.status}; only queued or waiting tasks can be resumed.`); continue; }
+        if (!['queued', 'waiting_approval', 'paused'].includes(task.status)) { console.log(`Task is ${task.status}; only queued, paused, or waiting tasks can be resumed.`); continue; }
         sessionId = task.sessionId;
-        await execute(task);
+        await execute(task.status === 'paused' ? local.resumeTask(task.id) : task);
+        continue;
+      }
+      const modeCommand = /^\/mode\s+([^\s]+)$/.exec(input);
+      if (modeCommand) {
+        const control = sessionId ? acpControl?.(sessionId) : undefined;
+        if (!sessionId) console.log('No active AgentCorps session. Run a prompt first.');
+        else if (!control?.setMode) console.log('The selected Agent does not expose ACP mode control.');
+        else try { await control.setMode(sessionId, modeCommand[1]!); console.log(`ACP mode changed to ${modeCommand[1]}`); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); }
+        continue;
+      }
+      const configCommand = /^\/config\s+([^\s]+)\s+(.+)$/.exec(input);
+      if (configCommand) {
+        const control = sessionId ? acpControl?.(sessionId) : undefined;
+        if (!sessionId) console.log('No active AgentCorps session. Run a prompt first.');
+        else if (!control?.setConfigOption) console.log('The selected Agent does not expose ACP config control.');
+        else try { await control.setConfigOption(sessionId, configCommand[1]!, configCommand[2]!); console.log(`ACP config ${configCommand[1]} updated`); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); }
+        continue;
+      }
+      const loadCommand = /^\/session-load\s+([^\s]+)$/.exec(input);
+      if (loadCommand) {
+        const control = sessionId ? acpControl?.(sessionId) : undefined;
+        if (!sessionId) console.log('No active AgentCorps session. Run a prompt first.');
+        else if (!control?.loadSession) console.log('The selected Agent does not expose ACP session loading.');
+        else try { await control.loadSession(sessionId, loadCommand[1]!); console.log(`Loaded ACP session ${loadCommand[1]} into ${sessionId}`); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); }
+        continue;
+      }
+      const closeCommand = input === '/session-close';
+      if (closeCommand) {
+        const control = sessionId ? acpControl?.(sessionId) : undefined;
+        if (!sessionId) console.log('No active AgentCorps session.');
+        else if (!control?.closeSession) console.log('The selected Agent does not expose ACP session closing.');
+        else try { await control.closeSession(sessionId); console.log(`Closed ACP session for ${sessionId}`); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); }
+        continue;
+      }
+      if (input === '/pause') {
+        const active = local.listTasks().find((task) => task.sessionId === sessionId && activeStatuses.includes(task.status));
+        if (active) console.log(JSON.stringify(local.pauseTask(active.id), null, 2)); else console.log('No active run.');
+        continue;
+      }
+      const retryCommand = /^\/retry(?:\s+([^\s]+))?$/.exec(input);
+      if (retryCommand) {
+        const task = retryCommand[1] ? local.getTask(retryCommand[1] as TaskId) : local.listTasks().find((candidate) => candidate.sessionId === sessionId && (candidate.status === 'failed' || candidate.status === 'cancelled'));
+        if (!task) console.log('No failed or cancelled task to retry.');
+        else { try { await execute(local.retryTask(task.id)); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); } }
         continue;
       }
       if (input === '/cancel') {
@@ -234,7 +342,8 @@ function renderFullScreen(options: TuiOptions, state: FullScreenState): void {
 async function runFullScreenTui(options: TuiOptions): Promise<void> {
   const input = process.stdin;
   const output = process.stdout;
-  const state: FullScreenState = { sessionId: undefined, input: '', cursor: 0, history: [], historyIndex: -1, output: [], activeTaskId: undefined, closing: false };
+  const requestedSessionMissing = Boolean(options.initialSessionId && !options.sessions.get(options.initialSessionId));
+  const state: FullScreenState = { sessionId: resolveInitialSessionId(options.sessions, options.initialSessionId), input: '', cursor: 0, history: [], historyIndex: -1, output: [], activeTaskId: undefined, closing: false };
   let escapeSequence = '';
   let running: Promise<void> | undefined;
   let resolveExit: (() => void) | undefined;
@@ -246,7 +355,12 @@ async function runFullScreenTui(options: TuiOptions): Promise<void> {
   };
   const refresh = (): void => renderFullScreen(options, state);
   const onEvent = (event: TaskEvent): void => {
-    if (event.type === 'run.output') log(event.payload.text, event.payload.stream === 'stderr' ? 'stderr │ ' : '');
+    if (state.activeTaskId && event.aggregateId !== state.activeTaskId) return;
+    if (event.type === 'run.output') {
+      for (const line of formatAgentOutput(event.payload.text, event.payload.stream)) log(line.text, event.payload.stream === 'stderr' ? 'stderr │ ' : '');
+    }
+    if (event.type === 'run.started') log(`Run started · ${event.payload.agentId}${event.payload.model ? ` · ${event.payload.model}` : ''}`);
+    if (event.type === 'run.protocol') log(formatProtocolEvent(event).text);
     if (event.type === 'task.status_changed') {
       log(`[${event.payload.to}]${event.payload.reason ? ` ${event.payload.reason}` : ''}`);
       if (terminalStatuses.includes(event.payload.to) || event.payload.to === 'waiting_approval') state.activeTaskId = undefined;
@@ -273,7 +387,7 @@ async function runFullScreenTui(options: TuiOptions): Promise<void> {
   };
   const execute = (task: Task): void => {
     state.activeTaskId = task.id;
-    running = options.runTask(task)
+    running = options.runTask(task, conversationForTask(options.sessions, task))
       .then((completed) => { if (completed.status === 'failed') log('Run failed. Use /history or task show to inspect the recorded events.', 'error │ '); })
       .catch((error: unknown) => log(error instanceof Error ? error.message : String(error), 'error │ '))
       .finally(() => { state.activeTaskId = undefined; running = undefined; refresh(); });
@@ -394,14 +508,15 @@ async function runFullScreenTui(options: TuiOptions): Promise<void> {
   input.on('data', onData);
   output.on('resize', refresh);
   output.write(`${ESC}?1049h${ESC}?25l`);
-  log('Full-screen mode. Type a prompt and press Enter.');
+  log('Full-screen mode. Type a prompt and press Enter. Type / to browse commands.');
   log(`Data: ${options.dataDir}`);
+  if (requestedSessionMissing) log(`Session not found: ${options.initialSessionId}. Starting without a session; enter a prompt to create one.`, 'error │ ');
   showHelp();
   refresh();
   await exited;
 }
 
 export async function runTui(options: TuiOptions): Promise<void> {
-  if (process.stdin.isTTY && process.stdout.isTTY) await runFullScreenTui(options);
+  if (process.stdin.isTTY && process.stdout.isTTY) await runInkTui(options);
   else await runLineTui(options);
 }

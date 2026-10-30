@@ -41,8 +41,10 @@ export function withRole(adapter: AgentAdapter, options: RolePromptOptions): Age
   if (!options.role && !options.instructions?.trim()) return adapter;
   return {
     descriptor: adapter.descriptor,
+    ...(adapter.control ? { control: adapter.control } : {}),
     execute(request: AgentRequest) {
       return adapter.execute({ ...request, task: { ...request.task, objective: composeRolePrompt(request.task.objective, options) } });
     },
+    ...(adapter.close ? { close: () => adapter.close!() } : {}),
   };
 }

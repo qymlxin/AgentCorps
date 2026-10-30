@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
 
 interface SqliteStatement {
@@ -13,7 +13,9 @@ interface SqliteDatabase {
   close(): void;
 }
 
-const DatabaseSync = (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+function databaseSync(): new (filePath: string) => SqliteDatabase {
+  return (createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (filePath: string) => SqliteDatabase }).DatabaseSync;
+}
 
 export type SandboxLevel = 'S0' | 'S1' | 'S2' | 'S3' | 'S4';
 export type SecurityDecision = 'allow' | 'approval_required' | 'deny';
@@ -71,7 +73,7 @@ export class SqliteAuditLog implements AuditLog {
 
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
-    this.db = new DatabaseSync(filePath);
+    this.db = new (databaseSync())(filePath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS audit_records (
@@ -155,10 +157,11 @@ export function isWithin(root: string, candidate: string | undefined): boolean {
 }
 
 export function createDefaultProfile(workspaceRoot: string, level: SandboxLevel = 'S1'): SandboxProfile {
+  const root = existsSync(resolve(workspaceRoot)) ? realpathSync(resolve(workspaceRoot)) : resolve(workspaceRoot);
   return {
     level,
-    workspaceRoot: resolve(workspaceRoot),
-    writableRoots: [resolve(workspaceRoot)],
+    workspaceRoot: root,
+    writableRoots: [root],
     network: 'none',
     allowedHosts: [],
     allowProcessExec: level === 'S2' || level === 'S3' || level === 'S4',
@@ -212,7 +215,7 @@ export class SqliteApprovalStore implements ApprovalStore {
 
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
-    this.db = new DatabaseSync(filePath);
+    this.db = new (databaseSync())(filePath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS approvals (

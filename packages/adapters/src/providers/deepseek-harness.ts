@@ -4,7 +4,7 @@ import type { AgentToolRegistry } from '../registry.js';
 export function registerDeepSeekHarness(registry: AgentToolRegistry): void {
   registry.register({
     id: 'deepseek-harness', displayName: 'DeepSeek Harness', command: 'dsh', args: ['--profile', 'headless'],
-    outputFormat: 'text', defaultRole: 'developer',
+    promptFlag: '--', outputFormat: 'text', defaultRole: 'developer',
     documentationUrl: 'https://github.com/deepseek-ai/deepseek-harness/tree/master/apps/cli',
   });
 }

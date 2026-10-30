@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AgentToolRegistry, createAgentToolRegistry, loadAgentToolDefinitions } from './registry.js';
+import { AgentToolRegistry, createAgentToolRegistry, loadAgentToolDefinitions, loadAcpAgentServers } from './registry.js';
 
 describe('agent tool registry', () => {
   it('ships common tools as declarative definitions', () => {
@@ -22,10 +22,30 @@ describe('agent tool registry', () => {
     expect(() => loadAgentToolDefinitions({ version: 1, tools: [{ id: 'bad', displayName: 'Bad', command: 'bad', args: [], outputFormat: 'text', unexpected: true }] }, new AgentToolRegistry())).toThrow('Unknown field');
   });
 
+  it('creates ACP tools through the same registry used by task runs', () => {
+    const registry = new AgentToolRegistry();
+    loadAcpAgentServers({ agent_servers: { 'External ACP Agent': { command: process.execPath, args: ['-e', ''] } } }, registry);
+    const adapter = registry.create('external-acp-agent');
+    expect(adapter.descriptor.transport).toBe('acp');
+    expect(adapter.descriptor.id).toBe('external-acp-agent');
+    expect(registry.get('external-acp-agent').displayName).toBe('External ACP Agent');
+  });
+  it('loads JetBrains ACP env settings without exposing credentials in listings', () => {
+    const registry = new AgentToolRegistry();
+    loadAcpAgentServers({ default_mcp_settings: { use_custom_mcp: true }, agent_servers: { 'External ACP Agent': { command: process.execPath, args: ['-e', ''], env: { API_KEY: 'secret-value' } } } }, registry);
+    expect(registry.list()[0]).not.toHaveProperty('env');
+    expect(registry.get('external-acp-agent').env).toEqual({ API_KEY: 'secret-value' });
+  });
+  it('allows a standalone double dash as a positional prompt separator', () => {
+    const registry = new AgentToolRegistry();
+    registry.register({ id: 'separator', displayName: 'Separator', command: 'separator', args: [], outputFormat: 'text', promptFlag: '--' });
+    expect(registry.get('separator').promptFlag).toBe('--');
+  });
+
   it.each([
     { id: 42 }, { displayName: 42 }, { command: false }, { args: 'not-an-array' },
     { defaultRole: false }, { defaultRole: '' }, { documentationUrl: {} }, { promptPlacement: '' },
-    { promptFlag: '' }, { versionArgs: ['\0'] }, { outputProtocol: 42 },
+    { promptFlag: '' }, { versionArgs: ['\0'] }, { outputProtocol: 42 }, { transport: 'websocket' },
   ])('rejects malformed custom configuration values: %j', (invalid) => {
     expect(() => loadAgentToolDefinitions({ version: 1, tools: [{ id: 'custom', displayName: 'Custom', command: 'custom', args: [], outputFormat: 'text', ...invalid }] }, new AgentToolRegistry())).toThrow();
   });
